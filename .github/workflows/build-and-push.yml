@@ -1,98 +1,113 @@
-name: Build and Push Docker Images
+name: Build Docker Images
 
 on:
-  schedule:
-    - cron: '0 * * * *'  # 北京时间整点运行
   workflow_dispatch:
     inputs:
-      version:
+      ss_go_version:
         description: 'Shadowsocks-go version (e.g., v1.14.0, leave empty for latest)'
         required: false
-        default: ''
         type: string
       force_build:
         description: 'Force build even if version exists'
         required: false
-        default: 'false'
-        type: string
-
-env:
-  GHCR_REGISTRY: ghcr.io
-  GHCR_IMAGE: ghcr.io/${{ github.repository_owner }}/shadowsocks-go
-  DOCKERHUB_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/${{ github.event.repository.name }}
+        default: false
+        type: boolean
+  schedule:
+    # 每小时整点运行（UTC时间）
+    - cron: '0 * * * *'
 
 jobs:
   check-version:
+    name: Check Latest Version
     runs-on: ubuntu-latest
     outputs:
-      new_version: ${{ steps.check.outputs.new_version }}
-      should_build: ${{ steps.check.outputs.should_build }}
+      should_build: ${{ steps.compare.outputs.should_build }}
+      ss_go_version: ${{ steps.get_version.outputs.version }}
     steps:
-      - name: Check for new release
-        id: check
+      - name: Get Latest Release Version
+        id: get_version
         run: |
-          # 检查是否有手动指定的版本
-          MANUAL_VERSION="${{ github.event.inputs.version }}"
+          RETRY=0
+          MAX_RETRIES=5
+          DELAY=10
           
-          if [ -n "$MANUAL_VERSION" ] && [ "$MANUAL_VERSION" != "" ]; then
-            echo "Using manually specified version: $MANUAL_VERSION"
-            # 确保版本号以 'v' 开头
-            if [[ ! "$MANUAL_VERSION" =~ ^v ]]; then
-              MANUAL_VERSION="v$MANUAL_VERSION"
+          while [ $RETRY -lt $MAX_RETRIES ]; do
+            if [ -n "${{ inputs.ss_go_version }}" ]; then
+              VERSION="${{ inputs.ss_go_version }}"
+              echo "Using specified version: $VERSION"
+              echo "version=$VERSION" >> $GITHUB_OUTPUT
+              break
+            else
+              echo "Attempt $((RETRY+1))/$MAX_RETRIES: Fetching latest release..."
+              RESPONSE=$(curl -s -w "\n%{http_code}" https://api.github.com/repos/database64128/shadowsocks-go/releases/latest || echo "000")
+              HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+              
+              if [ "$HTTP_CODE" = "200" ]; then
+                VERSION=$(echo "$RESPONSE" | sed '$d' | jq -r '.tag_name')
+                if [ -n "$VERSION" ] && [ "$VERSION" != "null" ]; then
+                  echo "Latest version: $VERSION"
+                  echo "version=$VERSION" >> $GITHUB_OUTPUT
+                  break
+                fi
+              fi
+              
+              RETRY=$((RETRY+1))
+              if [ $RETRY -lt $MAX_RETRIES ]; then
+                echo "Failed (HTTP $HTTP_CODE), retrying in ${DELAY}s..."
+                sleep $DELAY
+              else
+                echo "Error: Failed to fetch latest release after $MAX_RETRIES attempts"
+                exit 1
+              fi
             fi
-            echo "new_version=$MANUAL_VERSION" >> $GITHUB_OUTPUT
+          done
+
+      - name: Compare with GHCR Version
+        id: compare
+        run: |
+          if [ "${{ inputs.force_build }}" = "true" ]; then
+            echo "Force build enabled"
             echo "should_build=true" >> $GITHUB_OUTPUT
             exit 0
           fi
           
-          # 自动获取最新版本
-          echo "Fetching latest release..."
+          VERSION="${{ steps.get_version.outputs.version }}"
+          RETRY=0
+          MAX_RETRIES=5
+          DELAY=10
+          SHOULD_BUILD=false
           
-          # 增加重试机制
-          MAX_RETRIES=3
-          RETRY_DELAY=5
-          
-          for i in $(seq 1 $MAX_RETRIES); do
-            echo "Attempt $i of $MAX_RETRIES"
-            LATEST_VERSION=$(curl -s https://api.github.com/repos/database64128/shadowsocks-go/releases/latest | jq -r .tag_name)
+          while [ $RETRY -lt $MAX_RETRIES ]; do
+            echo "Attempt $((RETRY+1))/$MAX_RETRIES: Checking GHCR for version $VERSION..."
             
-            if [ -n "$LATEST_VERSION" ] && [ "$LATEST_VERSION" != "null" ] && [ "$LATEST_VERSION" != "" ]; then
-              echo "Latest version: $LATEST_VERSION"
-              echo "new_version=$LATEST_VERSION" >> $GITHUB_OUTPUT
-              echo "should_build=true" >> $GITHUB_OUTPUT
-              exit 0
+            # 检查 GHCR 是否存在该版本（检查 debian 标签）
+            REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+            if docker manifest inspect ghcr.io/${REPO_LOWER}:${VERSION#v}-debian >/dev/null 2>&1; then
+              echo "Version $VERSION already exists in GHCR"
+              SHOULD_BUILD=false
+              break
             else
-              echo "Failed to get valid version (got: '$LATEST_VERSION')"
-              if [ $i -lt $MAX_RETRIES ]; then
-                echo "Retrying in ${RETRY_DELAY}s..."
-                sleep $RETRY_DELAY
-              fi
+              echo "Version $VERSION not found in GHCR, will build"
+              SHOULD_BUILD=true
+              break
+            fi
+            
+            RETRY=$((RETRY+1))
+            if [ $RETRY -lt $MAX_RETRIES ]; then
+              echo "Check failed, retrying in ${DELAY}s..."
+              sleep $DELAY
             fi
           done
           
-          echo "Error: Failed to get version after $MAX_RETRIES attempts"
-          exit 1
+          echo "should_build=$SHOULD_BUILD" >> $GITHUB_OUTPUT
 
-  build-variants:
+  build-debian:
+    name: Build Debian Image
     needs: check-version
     if: needs.check-version.outputs.should_build == 'true'
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    strategy:
-      matrix:
-        base: [debian, alpine]
-        variant: [amd64-v2, amd64-v3, arm64]
-        include:
-          - base: debian
-            dockerfile: Dockerfile.debian
-            base_tag: debian
-          - base: alpine
-            dockerfile: Dockerfile.alpine
-            base_tag: alpine
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up QEMU
@@ -101,183 +116,107 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to GHCR
+      - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.GHCR_REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Prepare build args
-        id: prepare
-        run: |
-          ARCH=""
-          PLATFORM=""
-          SS_VERSION=""
-          
-          case "${{ matrix.variant }}" in
-            "amd64-v2")
-              ARCH="amd64"
-              PLATFORM="linux/amd64"
-              SS_VERSION="v2"
-              ;;
-            "amd64-v3")
-              ARCH="amd64"
-              PLATFORM="linux/amd64"
-              SS_VERSION="v3"
-              ;;
-            "arm64")
-              ARCH="arm64"
-              PLATFORM="linux/arm64"
-              SS_VERSION=""
-              ;;
-          esac
-          
-          echo "arch=$ARCH" >> $GITHUB_OUTPUT
-          echo "platform=$PLATFORM" >> $GITHUB_OUTPUT
-          echo "ss_version=$SS_VERSION" >> $GITHUB_OUTPUT
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Debug output
+      - name: Prepare Tags
+        id: tags
         run: |
-          echo "Version from check-version job: ${{ needs.check-version.outputs.new_version }}"
-          echo "Base: ${{ matrix.base }}"
-          echo "Variant: ${{ matrix.variant }}"
-          echo "Dockerfile: ${{ matrix.dockerfile }}"
-          echo "Base tag: ${{ matrix.base_tag }}"
+          VERSION="${{ needs.check-version.outputs.ss_go_version }}"
+          VERSION_NO_V="${VERSION#v}"
+          
+          REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          DOCKERHUB_REPO="${{ secrets.DOCKERHUB_USERNAME }}/$(basename $REPO_LOWER)"
+          
+          # 生成标签
+          TAGS="ghcr.io/${REPO_LOWER}:${VERSION_NO_V}-debian"
+          TAGS="${TAGS},ghcr.io/${REPO_LOWER}:${VERSION_NO_V}"
+          TAGS="${TAGS},ghcr.io/${REPO_LOWER}:latest-debian"
+          TAGS="${TAGS},ghcr.io/${REPO_LOWER}:latest"
+          TAGS="${TAGS},${DOCKERHUB_REPO}:${VERSION_NO_V}-debian"
+          TAGS="${TAGS},${DOCKERHUB_REPO}:${VERSION_NO_V}"
+          TAGS="${TAGS},${DOCKERHUB_REPO}:latest-debian"
+          TAGS="${TAGS},${DOCKERHUB_REPO}:latest"
+          
+          echo "tags=${TAGS}" >> $GITHUB_OUTPUT
 
-      - name: Build and push variant
+      - name: Build and Push
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./${{ matrix.dockerfile }}
-          platforms: ${{ steps.prepare.outputs.platform }}
+          file: Dockerfile.debian
+          platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            ${{ env.GHCR_IMAGE }}:${{ needs.check-version.outputs.new_version }}-${{ matrix.base_tag }}-${{ matrix.variant }}
+          tags: ${{ steps.tags.outputs.tags }}
           build-args: |
-            VERSION=${{ needs.check-version.outputs.new_version }}
-            ARCH=${{ steps.prepare.outputs.arch }}
-            SS_VERSION=${{ steps.prepare.outputs.ss_version }}
-          cache-from: type=gha,scope=${{ matrix.base }}-${{ matrix.variant }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.base }}-${{ matrix.variant }}
-        id: build-push
+            SS_GO_VERSION=${{ needs.check-version.outputs.ss_go_version }}
+          cache-from: type=gha,scope=debian
+          cache-to: type=gha,mode=max,scope=debian
 
-  create-manifests:
-    needs: build-variants
+  build-alpine:
+    name: Build Alpine Image
+    needs: check-version
+    if: needs.check-version.outputs.should_build == 'true'
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to GHCR
+      - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.GHCR_REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Debug information
-        run: |
-          echo "Version to use: ${{ needs.check-version.outputs.new_version }}"
-          echo "GHCR Image: ${{ env.GHCR_IMAGE }}"
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Create and push manifests
+      - name: Prepare Tags
+        id: tags
         run: |
-          VERSION="${{ needs.check-version.outputs.new_version }}"
+          VERSION="${{ needs.check-version.outputs.ss_go_version }}"
+          VERSION_NO_V="${VERSION#v}"
           
-          # 验证版本号不为空
-          if [ -z "$VERSION" ]; then
-            echo "Error: VERSION is empty!"
-            exit 1
-          fi
+          REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          DOCKERHUB_REPO="${{ secrets.DOCKERHUB_USERNAME }}/$(basename $REPO_LOWER)"
           
-          echo "Creating manifests for version: $VERSION"
+          # 生成标签
+          TAGS="ghcr.io/${REPO_LOWER}:${VERSION_NO_V}-alpine"
+          TAGS="${TAGS},ghcr.io/${REPO_LOWER}:latest-alpine"
+          TAGS="${TAGS},${DOCKERHUB_REPO}:${VERSION_NO_V}-alpine"
+          TAGS="${TAGS},${DOCKERHUB_REPO}:latest-alpine"
           
-          # 为每个基础镜像创建 manifest
-          for BASE in debian alpine; do
-            echo "Creating manifest for $BASE..."
-            
-            # 验证所有需要的镜像都存在
-            echo "Checking if all required images exist..."
-            for VARIANT in amd64-v2 amd64-v3 arm64; do
-              IMAGE_TAG="$GHCR_IMAGE:${VERSION}-${BASE}-${VARIANT}"
-              echo "Checking: $IMAGE_TAG"
-            done
-            
-            # 版本标签
-            docker manifest create $GHCR_IMAGE:${VERSION}-${BASE} \
-              $GHCR_IMAGE:${VERSION}-${BASE}-amd64-v2 \
-              $GHCR_IMAGE:${VERSION}-${BASE}-amd64-v3 \
-              $GHCR_IMAGE:${VERSION}-${BASE}-arm64
-            
-            if [ $? -ne 0 ]; then
-              echo "Error creating manifest for $VERSION-$BASE"
-              exit 1
-            fi
-            
-            # 添加注解
-            docker manifest annotate $GHCR_IMAGE:${VERSION}-${BASE} \
-              $GHCR_IMAGE:${VERSION}-${BASE}-amd64-v2 \
-              --os linux --arch amd64 \
-              --variant v2 \
-              --annotation "com.shadowsocks.cpu.features=SSE4.2,POPCNT" \
-              --annotation "com.shadowsocks.base=$BASE" \
-              --annotation "com.shadowsocks.description=Compatible version for older x86_64 CPUs on $BASE"
-            
-            docker manifest annotate $GHCR_IMAGE:${VERSION}-${BASE} \
-              $GHCR_IMAGE:${VERSION}-${BASE}-amd64-v3 \
-              --os linux --arch amd64 \
-              --variant v3 \
-              --annotation "com.shadowsocks.cpu.features=AVX2,BMI1,BMI2" \
-              --annotation "com.shadowsocks.base=$BASE" \
-              --annotation "com.shadowsocks.description=Optimized version for newer x86_64 CPUs on $BASE"
-            
-            docker manifest annotate $GHCR_IMAGE:${VERSION}-${BASE} \
-              $GHCR_IMAGE:${VERSION}-${BASE}-arm64 \
-              --os linux --arch arm64 \
-              --variant v8 \
-              --annotation "com.shadowsocks.base=$BASE" \
-              --annotation "com.shadowsocks.description=ARM64 version on $BASE"
-            
-            # 推送版本标签
-            echo "Pushing manifest: $GHCR_IMAGE:${VERSION}-${BASE}"
-            docker manifest push $GHCR_IMAGE:${VERSION}-${BASE}
-            
-            if [ $? -ne 0 ]; then
-              echo "Error pushing manifest for $VERSION-$BASE"
-              exit 1
-            fi
-            
-            # 创建 latest-{base} 标签
-            docker manifest create $GHCR_IMAGE:latest-${BASE} \
-              $GHCR_IMAGE:${VERSION}-${BASE}-amd64-v2 \
-              $GHCR_IMAGE:${VERSION}-${BASE}-amd64-v3 \
-              $GHCR_IMAGE:${VERSION}-${BASE}-arm64
-            
-            echo "Pushing manifest: $GHCR_IMAGE:latest-${BASE}"
-            docker manifest push $GHCR_IMAGE:latest-${BASE}
-          done
-          
-          # 创建默认标签（指向 debian）
-          echo "Creating default manifests..."
-          
-          docker manifest create $GHCR_IMAGE:${VERSION} \
-            $GHCR_IMAGE:${VERSION}-debian-amd64-v2 \
-            $GHCR_IMAGE:${VERSION}-debian-amd64-v3 \
-            $GHCR_IMAGE:${VERSION}-debian-arm64
-          
-          echo "Pushing manifest: $GHCR_IMAGE:${VERSION}"
-          docker manifest push $GHCR_IMAGE:${VERSION}
-          
-          docker manifest create $GHCR_IMAGE:latest \
-            $GHCR_IMAGE:${VERSION}-debian-amd64-v2 \
-            $GHCR_IMAGE:${VERSION}-debian-amd64-v3 \
-            $GHCR_IMAGE:${VERSION}-debian-arm64
-          
-          echo "Pushing manifest: $GHCR_IMAGE:latest"
-          docker manifest push $GHCR_IMAGE:latest
-          
-          echo "All manifests created successfully!"
+          echo "tags=${TAGS}" >> $GITHUB_OUTPUT
+
+      - name: Build and Push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.alpine
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          build-args: |
+            SS_GO_VERSION=${{ needs.check-version.outputs.ss_go_version }}
+          cache-from: type=gha,scope=alpine
+          cache-to: type=gha,mode=max,scope=alpine
