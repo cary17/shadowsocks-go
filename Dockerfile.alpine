@@ -7,75 +7,58 @@ ARG TARGETVARIANT="v2"
 WORKDIR /tmp
 
 # 安装必要工具
-FROM debian:stable-slim as builder
+RUN apk add --no-cache wget zstd ca-certificates
 
-ARG TARGETARCH
-ARG SS_GO_VERSION
-ARG TARGETVARIANT="v2"
-
-# 添加调试：显示构建参数
-RUN echo "=== Build Parameters ===" && \
-    echo "TARGETARCH: $TARGETARCH" && \
-    echo "SS_GO_VERSION: $SS_GO_VERSION" && \
-    echo "TARGETVARIANT: $TARGETVARIANT" && \
-    echo "========================="
-
-WORKDIR /tmp
-
-# 安装必要工具
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends wget zstd ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
-
-# 根据架构选择版本 - 添加详细日志
-RUN echo "=== Starting package download ===" && \
-    ARCH_VARIANT="" && \
+# 根据架构选择版本
+RUN ARCH_VARIANT="" && \
     if [ "$TARGETARCH" = "amd64" ]; then \
         if [ "$TARGETVARIANT" = "v3" ]; then \
             ARCH_VARIANT="x86-64-v3"; \
-            echo "Selected architecture: x86-64-v3"; \
+            echo "Using x86-64-v3"; \
         else \
             ARCH_VARIANT="x86-64-v2"; \
-            echo "Selected architecture: x86-64-v2"; \
+            echo "Using x86-64-v2"; \
         fi; \
     elif [ "$TARGETARCH" = "arm64" ]; then \
         ARCH_VARIANT="arm64"; \
-        echo "Selected architecture: arm64"; \
+        echo "Using arm64"; \
     else \
-        echo "ERROR: Unsupported architecture: $TARGETARCH" && exit 1; \
+        echo "Unsupported architecture: $TARGETARCH" && exit 1; \
     fi && \
-    # 下载对应架构的包
-    PACKAGE_NAME="shadowsocks-go-${SS_GO_VERSION}-linux-${ARCH_VARIANT}.tar.zst" && \
-    DOWNLOAD_URL="https://github.com/database64128/shadowsocks-go/releases/download/${SS_GO_VERSION}/${PACKAGE_NAME}" && \
-    echo "Package name: $PACKAGE_NAME" && \
-    echo "Download URL: $DOWNLOAD_URL" && \
-    echo "Current directory: $(pwd)" && \
-    echo "Directory contents:" && ls -la && \
+    # 尝试多种包名格式
+    echo "Selected architecture variant: $ARCH_VARIANT" && \
+    echo "Version: $SS_GO_VERSION" && \
+    # 格式1: shadowsocks-go-v1.14.0-linux-x86-64-v2.tar.zst
+    PACKAGE_NAME_1="shadowsocks-go-${SS_GO_VERSION}-linux-${ARCH_VARIANT}.tar.zst" && \
+    # 格式2: shadowsocks-go-1.14.0-linux-x86-64-v2.tar.zst (不带v前缀)
+    PACKAGE_NAME_2="shadowsocks-go-${SS_GO_VERSION#v}-linux-${ARCH_VARIANT}.tar.zst" && \
+    echo "Trying package name 1: $PACKAGE_NAME_1" && \
+    echo "Trying package name 2: $PACKAGE_NAME_2" && \
+    URL1="https://github.com/database64128/shadowsocks-go/releases/download/${SS_GO_VERSION}/${PACKAGE_NAME_1}" && \
+    URL2="https://github.com/database64128/shadowsocks-go/releases/download/${SS_GO_VERSION}/${PACKAGE_NAME_2}" && \
     # 尝试下载
-    echo "Downloading package..." && \
-    if wget --no-verbose --show-progress "$DOWNLOAD_URL"; then \
-        echo "Download successful!" && \
-        echo "File downloaded:" && ls -la "$PACKAGE_NAME" && \
-        echo "File size: $(stat -c%s "$PACKAGE_NAME") bytes"; \
+    if wget --no-verbose --show-progress "$URL1"; then \
+        echo "Downloaded using URL1" && \
+        PACKAGE_NAME="$PACKAGE_NAME_1"; \
+    elif wget --no-verbose --show-progress "$URL2"; then \
+        echo "Downloaded using URL2" && \
+        PACKAGE_NAME="$PACKAGE_NAME_2"; \
     else \
-        echo "ERROR: Download failed!" && \
-        echo "Checking if URL exists..." && \
-        if wget --spider "$DOWNLOAD_URL" 2>/dev/null; then \
-            echo "URL exists but download failed"; \
-        else \
-            echo "URL does not exist"; \
-        fi && \
+        echo "ERROR: Both download attempts failed!" && \
+        echo "Tested URLs:" && \
+        echo "  $URL1" && \
+        echo "  $URL2" && \
+        echo "Checking available releases..." && \
+        curl -s "https://api.github.com/repos/database64128/shadowsocks-go/releases" | \
+          jq -r '.[0].assets[].name' | head -10 && \
         exit 1; \
     fi && \
+    echo "Download successful: $PACKAGE_NAME" && \
+    echo "File size: $(stat -c%s "$PACKAGE_NAME") bytes" && \
     # 解压并清理
-    echo "Extracting package..." && \
-    tar -xvf "$PACKAGE_NAME" && \
-    echo "Extraction complete, files:" && ls -la && \
+    tar -xf "$PACKAGE_NAME" && \
     chmod +x shadowsocks-go && \
-    echo "Binary permissions:" && ls -la shadowsocks-go && \
-    echo "Removing unnecessary files..." && \
-    rm -f shadowsocks-go-domain-set-converter "$PACKAGE_NAME" && \
-    echo "=== Build complete ==="
+    rm -f shadowsocks-go-domain-set-converter "$PACKAGE_NAME"
 
 FROM alpine:latest
 
