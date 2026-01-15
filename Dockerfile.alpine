@@ -25,36 +25,28 @@ RUN ARCH_VARIANT="" && \
     else \
         echo "Unsupported architecture: $TARGETARCH" && exit 1; \
     fi && \
-    # 尝试多种包名格式
-    echo "Selected architecture variant: $ARCH_VARIANT" && \
+    # 包名格式：shadowsocks-go-v1.14.0-linux-x86-64-v2.tar.zst
+    PACKAGE_NAME="shadowsocks-go-${SS_GO_VERSION}-linux-${ARCH_VARIANT}.tar.zst" && \
+    DOWNLOAD_URL="https://github.com/database64128/shadowsocks-go/releases/download/${SS_GO_VERSION}/${PACKAGE_NAME}" && \
+    echo "Selected architecture: $ARCH_VARIANT" && \
     echo "Version: $SS_GO_VERSION" && \
-    # 格式1: shadowsocks-go-v1.14.0-linux-x86-64-v2.tar.zst
-    PACKAGE_NAME_1="shadowsocks-go-${SS_GO_VERSION}-linux-${ARCH_VARIANT}.tar.zst" && \
-    # 格式2: shadowsocks-go-1.14.0-linux-x86-64-v2.tar.zst (不带v前缀)
-    PACKAGE_NAME_2="shadowsocks-go-${SS_GO_VERSION#v}-linux-${ARCH_VARIANT}.tar.zst" && \
-    echo "Trying package name 1: $PACKAGE_NAME_1" && \
-    echo "Trying package name 2: $PACKAGE_NAME_2" && \
-    URL1="https://github.com/database64128/shadowsocks-go/releases/download/${SS_GO_VERSION}/${PACKAGE_NAME_1}" && \
-    URL2="https://github.com/database64128/shadowsocks-go/releases/download/${SS_GO_VERSION}/${PACKAGE_NAME_2}" && \
-    # 尝试下载
-    if wget --no-verbose --show-progress "$URL1"; then \
-        echo "Downloaded using URL1" && \
-        PACKAGE_NAME="$PACKAGE_NAME_1"; \
-    elif wget --no-verbose --show-progress "$URL2"; then \
-        echo "Downloaded using URL2" && \
-        PACKAGE_NAME="$PACKAGE_NAME_2"; \
+    echo "Package name: $PACKAGE_NAME" && \
+    echo "Download URL: $DOWNLOAD_URL" && \
+    # 直接下载
+    echo "Downloading package..." && \
+    if wget --no-verbose --show-progress "$DOWNLOAD_URL"; then \
+        echo "Download successful!" && \
+        echo "File size: $(stat -c%s "$PACKAGE_NAME") bytes"; \
     else \
-        echo "ERROR: Both download attempts failed!" && \
-        echo "Tested URLs:" && \
-        echo "  $URL1" && \
-        echo "  $URL2" && \
-        echo "Checking available releases..." && \
+        echo "ERROR: Download failed!" && \
+        echo "Testing if URL exists..." && \
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -I "$DOWNLOAD_URL") && \
+        echo "HTTP Status: $HTTP_CODE" && \
+        echo "Available packages for $SS_GO_VERSION:" && \
         curl -s "https://api.github.com/repos/database64128/shadowsocks-go/releases" | \
-          jq -r '.[0].assets[].name' | head -10 && \
+          jq -r --arg version "$SS_GO_VERSION" '.[] | select(.tag_name == $version) | .assets[].name' | head -20 && \
         exit 1; \
     fi && \
-    echo "Download successful: $PACKAGE_NAME" && \
-    echo "File size: $(stat -c%s "$PACKAGE_NAME") bytes" && \
     # 解压并清理
     tar -xf "$PACKAGE_NAME" && \
     chmod +x shadowsocks-go && \
