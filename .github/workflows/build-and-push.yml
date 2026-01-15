@@ -57,7 +57,7 @@ jobs:
             exit 1
           fi
 
-  build-base-images:
+  build-variants:
     needs: check-version
     if: needs.check-version.outputs.should_build == 'true'
     runs-on: ubuntu-latest
@@ -70,10 +70,10 @@ jobs:
         variant: [amd64-v2, amd64-v3, arm64]
         include:
           - base: debian
-            base_image: debian:stable-slim
+            dockerfile: Dockerfile.debian
             base_tag: debian
           - base: alpine
-            base_image: alpine:latest
+            dockerfile: Dockerfile.alpine
             base_tag: alpine
     steps:
       - name: Checkout repository
@@ -125,23 +125,21 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./Dockerfile
+          file: ./${{ matrix.dockerfile }}
           platforms: ${{ steps.prepare.outputs.platform }}
           push: true
           tags: |
             ${{ env.GHCR_IMAGE }}:${{ needs.check-version.outputs.new_version }}-${{ matrix.base_tag }}-${{ matrix.variant }}
           build-args: |
             VERSION=${{ needs.check-version.outputs.new_version }}
-            BASE_IMAGE=${{ matrix.base_image }}
             ARCH=${{ steps.prepare.outputs.arch }}
             SS_VERSION=${{ steps.prepare.outputs.ss_version }}
           cache-from: type=gha,scope=${{ matrix.base }}-${{ matrix.variant }}
           cache-to: type=gha,mode=max,scope=${{ matrix.base }}-${{ matrix.variant }}
-          target: runtime
         id: build-push
 
   create-manifests:
-    needs: build-base-images
+    needs: build-variants
     runs-on: ubuntu-latest
     permissions:
       contents: read
