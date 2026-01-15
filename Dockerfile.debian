@@ -2,28 +2,53 @@ FROM debian:stable-slim as builder
 
 ARG TARGETARCH
 ARG SS_GO_VERSION
+ARG TARGETVARIANT="v2"  # 默认使用 v2
 
+WORKDIR /tmp
+
+# 安装必要工具
 RUN apt-get update && \
     apt-get install -y --no-install-recommends wget zstd ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
-WORKDIR /tmp
-
+# 根据架构和变体选择版本
 RUN ARCH_VARIANT="" && \
     if [ "$TARGETARCH" = "amd64" ]; then \
-        if grep -q avx2 /proc/cpuinfo && grep -q bmi2 /proc/cpuinfo; then \
+        if [ "$TARGETVARIANT" = "v3" ]; then \
             ARCH_VARIANT="x86-64-v3"; \
+            echo "Using x86-64-v3 (explicitly requested)"; \
+        elif [ "$TARGETVARIANT" = "v2" ]; then \
+            ARCH_VARIANT="x86-64-v2"; \
+            echo "Using x86-64-v2 (explicitly requested)"; \
+        elif [ -f /proc/cpuinfo ] && grep -q avx2 /proc/cpuinfo 2>/dev/null && grep -q bmi2 /proc/cpuinfo 2>/dev/null; then \
+            ARCH_VARIANT="x86-64-v3"; \
+            echo "Using x86-64-v3 (CPU supports AVX2/BMI2)"; \
         else \
             ARCH_VARIANT="x86-64-v2"; \
+            echo "Using x86-64-v2 (default for compatibility)"; \
         fi; \
     elif [ "$TARGETARCH" = "arm64" ]; then \
         ARCH_VARIANT="arm64"; \
+        echo "Using arm64"; \
     else \
         echo "Unsupported architecture: $TARGETARCH" && exit 1; \
     fi && \
+    # 下载对应架构的包
     PACKAGE_NAME="shadowsocks-go-${SS_GO_VERSION}-linux-${ARCH_VARIANT}.tar.zst" && \
     echo "Downloading: $PACKAGE_NAME" && \
-    wget -q --show-progress "https://github.com/database64128/shadowsocks-go/releases/download/${SS_GO_VERSION}/${PACKAGE_NAME}" && \
+    # 尝试下载指定架构版本
+    if wget -q --spider "https://github.com/database64128/shadowsocks-go/releases/download/${SS_GO_VERSION}/${PACKAGE_NAME}" 2>/dev/null; then \
+        wget -q --show-progress "https://github.com/database64128/shadowsocks-go/releases/download/${SS_GO_VERSION}/${PACKAGE_NAME}" && \
+        echo "Downloaded specific architecture package"; \
+    else \
+        # 如果特定架构版本不存在，尝试通用版本
+        echo "Specific architecture package not found, trying generic version..." && \
+        GENERIC_NAME="shadowsocks-go-${SS_GO_VERSION}-linux-${TARGETARCH}.tar.zst" && \
+        wget -q --show-progress "https://github.com/database64128/shadowsocks-go/releases/download/${SS_GO_VERSION}/${GENERIC_NAME}" || \
+        (echo "Error: Failed to download package" && exit 1); \
+        PACKAGE_NAME="$GENERIC_NAME"; \
+    fi && \
+    # 解压并清理
     tar -xf "$PACKAGE_NAME" && \
     chmod +x shadowsocks-go && \
     rm -f shadowsocks-go-domain-set-converter "$PACKAGE_NAME"
@@ -34,13 +59,17 @@ LABEL maintainer="shadowsocks-go-docker" \
       org.opencontainers.image.source="https://github.com/database64128/shadowsocks-go" \
       org.opencontainers.image.description="Shadowsocks-go Docker image based on Debian"
 
+# 安装最小运行时依赖
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates tzdata && \
+    apt-get clean && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
+# 从构建器复制二进制文件
 COPY --from=builder /tmp/shadowsocks-go /usr/local/bin/shadowsocks-go
 COPY entrypoint.sh /entrypoint.sh
 
+# 设置权限和用户
 RUN chmod +x /entrypoint.sh /usr/local/bin/shadowsocks-go && \
     mkdir -p /etc/ss-go && \
     useradd -r -s /sbin/nologin -M shadowsocks
