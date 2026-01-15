@@ -2,9 +2,10 @@ version: '3.8'
 
 services:
   shadowsocks-go:
-    # 使用带v前缀的版本号或latest
-    image: ghcr.io/YOUR_USERNAME/shadowsocks-go:v1.11.0
-    # 或者使用: ghcr.io/YOUR_USERNAME/shadowsocks-go:latest
+    # 使用您的用户名 - 这里需要手动替换
+    image: ghcr.io/YOUR_GITHUB_USERNAME/shadowsocks-go:latest
+    # 或者使用 Docker Hub
+    # image: YOUR_DOCKERHUB_USERNAME/shadowsocks-go:latest
     container_name: shadowsocks-go
     restart: unless-stopped
     ports:
