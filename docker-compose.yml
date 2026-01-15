@@ -2,8 +2,8 @@ version: '3.8'
 
 services:
   shadowsocks-go:
-    # 使用您的实际用户名和仓库名
-    image: ghcr.io/cary17/YOUR_REPO_NAME:latest
+    # 替换 YOUR_USERNAME 和 YOUR_REPO_NAME 为实际值
+    image: ghcr.io/YOUR_USERNAME/YOUR_REPO_NAME:latest
     container_name: shadowsocks-go
     restart: unless-stopped
     ports:
