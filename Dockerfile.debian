@@ -1,7 +1,7 @@
 # Dockerfile.debian
-ARG DEBIAN_VERSION=latest
+ARG DEBIAN_VERSION=stable-slim
 
-FROM debian:${DEBIAN_VERSION}-slim AS builder
+FROM debian:${DEBIAN_VERSION} AS builder
 
 # 安装必要的工具
 RUN apt-get update && \
@@ -77,7 +77,7 @@ RUN set -e && \
     rm -rf /tmp/*
 
 # ========== 最终镜像 ==========
-FROM debian:${DEBIAN_VERSION}-slim
+FROM debian:${DEBIAN_VERSION}
 
 # 安装 CA 证书
 RUN apt-get update && \
