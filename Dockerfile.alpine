@@ -19,15 +19,11 @@ RUN set -e && \
     # 确定架构和变体
     case "${TARGETARCH}" in \
         "amd64") \
-            # 检测 CPU 是否支持 AVX2 和 BMI 指令集
-            # 注意：这是在构建环境中检测，不是运行环境
-            # 我们默认构建 v2 版本以保证兼容性
             if [ "$VARIANT" = "glibc" ]; then \
                 echo "Error: glibc variant not supported on Alpine" && exit 1; \
             fi; \
             \
-            # 默认使用 v2 版本以保证最大兼容性
-            # 用户可以在运行容器时通过环境变量覆盖
+            # Alpine 默认使用 v2 版本以保证最大兼容性
             SS_VERSION="v2"; \
             \
             # 构建下载 URL
