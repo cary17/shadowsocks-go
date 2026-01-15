@@ -11,7 +11,7 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends wget curl zstd ca-certificates jq && \
     rm -rf /var/lib/apt/lists/*
 
-# 根据架构选择版本 - 使用heredoc避免单引号问题
+# 根据架构选择版本
 RUN /bin/bash << 'EOF'
 ARCH_VARIANT=""
 if [ "$TARGETARCH" = "amd64" ]; then
