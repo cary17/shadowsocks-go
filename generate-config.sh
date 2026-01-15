@@ -54,8 +54,15 @@ cat > "$CONFIG_FILE" << EOF
             "psk": "$SS_PSK"
 EOF
 
-# 添加可选的 UPSK 存储路径
-if [ -f "/etc/ss-go/upsks.json" ] || [ -n "$SS_UPSK_STEVE" ] || [ -n "$SS_UPSK_ALEX" ]; then
+# 检查是否有 UPSK 环境变量
+HAS_UPSK=false
+for var in $(env | grep '^SS_UPSK_' | cut -d= -f1); do
+    HAS_UPSK=true
+    break
+done
+
+# 如果有 UPSK 环境变量，添加 uPSKStorePath
+if [ "$HAS_UPSK" = "true" ] || [ -f "/etc/ss-go/upsks.json" ]; then
     echo "            ,\"uPSKStorePath\": \"/etc/ss-go/upsks.json\"" >> "$CONFIG_FILE"
 fi
 
@@ -82,7 +89,7 @@ if [ "$SS_MODE" = "server" ]; then
     echo "  UDP Port: $SS_UDP_PORT"
     echo "  MTU: $SS_MTU"
     echo "  PSK: $SS_PSK"
-    if [ -f "/etc/ss-go/upsks.json" ]; then
+    if [ "$HAS_UPSK" = "true" ] || [ -f "/etc/ss-go/upsks.json" ]; then
         echo "  UPSK Store: /etc/ss-go/upsks.json"
     fi
 fi
