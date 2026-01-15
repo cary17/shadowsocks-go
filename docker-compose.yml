@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  shadowsocks-go:
+    image: ghcr.io/your-username/shadowsocks-go:latest
+    container_name: shadowsocks-go
+    restart: unless-stopped
+    ports:
+      - "20220:20220/tcp"
+      - "20220:20220/udp"
+    environment:
+      # 服务器名称（必填）
+      - SS_SERVER_NAME=ss-2022
+      # 协议类型（必填）
+      - SS_PROTOCOL=2022-blake3-aes-128-gcm
+      # 预共享密钥（必填）
+      - SS_PSK=qQln3GlVCZi5iJUObJVNCw==
+      # TCP 监听地址（可选，默认 :20220）
+      - SS_TCP_ADDRESS=:20220
+      # UDP 监听地址（可选，默认 :20220）
+      - SS_UDP_ADDRESS=:20220
+      # MTU 大小（可选，默认 1500）
+      - SS_MTU=1500
+      # TCP Fast Open（可选，默认 true）
+      - SS_TCP_FASTOPEN=true
+      # 多用户配置（可选，格式: user1:psk1,user2:psk2）
+      # - SS_UPSK_USERS=Steve:oE/s2z9Q8EWORAB8B3UCxw==,Alex:hWXLOSW/r/LtNKynrA3S8Q==
+    # 或者使用挂载配置文件方式（注释掉上面的 environment 部分）
+    # volumes:
+    #   - ./ss-config:/etc/ss-go
+    networks:
+      - shadowsocks-net
+
+networks:
+  shadowsocks-net:
+    driver: bridge
