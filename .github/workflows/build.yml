@@ -118,6 +118,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      ss_go_version: ${{ needs.get-version.outputs.ss_go_version }}
     strategy:
       fail-fast: false
       matrix:
@@ -215,7 +217,7 @@ jobs:
   create-manifests:
     name: Create Multi-arch Manifests
     needs: build-debian
-    if: ${{ needs.check-existing.outputs.need_build == 'true' && needs.get-version.outputs.ss_go_version != '' }}
+    if: ${{ needs.build-debian.outputs.ss_go_version != '' }}
     runs-on: ubuntu-latest
     permissions:
       packages: write
@@ -240,7 +242,7 @@ jobs:
       - name: Create Manifests
         run: |
           /bin/bash << 'EOF'
-          VERSION="${{ needs.get-version.outputs.ss_go_version }}"
+          VERSION="${{ needs.build-debian.outputs.ss_go_version }}"
           REPO_NAME="shadowsocks-go"
           REPO_LOWER="shadowsocks-go"
           GHCR_REPO="ghcr.io/${{ github.repository_owner }}/$REPO_LOWER"
