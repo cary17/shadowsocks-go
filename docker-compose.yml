@@ -2,8 +2,8 @@ version: '3.8'
 
 services:
   shadowsocks-go:
-    # 使用您的用户名 - 这里需要手动替换
-    image: ghcr.io/YOUR_GITHUB_USERNAME/shadowsocks-go:latest
+    # 替换 YOUR_USERNAME 为您的 GitHub 用户名
+    image: ghcr.io/YOUR_USERNAME/shadowsocks-go:latest
     # 或者使用 Docker Hub
     # image: YOUR_DOCKERHUB_USERNAME/shadowsocks-go:latest
     container_name: shadowsocks-go
