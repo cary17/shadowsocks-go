@@ -6,9 +6,10 @@ on:
   workflow_dispatch:
     inputs:
       ss_go_version:
-        description: 'Shadowsocks-go版本 (如 v1.14.0, 留空自动获取)'
+        description: 'Shadowsocks-go版本 (如 v1.14.0)'
         required: false
         type: string
+        default: 'v1.14.0'
       force:
         description: '强制构建'
         required: false
@@ -20,82 +21,50 @@ env:
   DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
 jobs:
-  check-version:
-    name: Check Latest Version
+  get-version:
+    name: Get Version
     runs-on: ubuntu-latest
     outputs:
-      ss_go_version: ${{ steps.get_version.outputs.version }}
-      should_build: ${{ steps.decide.outputs.should_build }}
+      ss_go_version: ${{ steps.version.outputs.version }}
     steps:
-      - name: 获取最新版本
-        id: get_version
+      - name: 获取版本号
+        id: version
         run: |
-          # 使用 heredoc 避免单引号问题
           /bin/bash << 'EOF'
-          if [ -n "${{ inputs.ss_go_version }}" ]; then
+          # 设置默认版本
+          DEFAULT_VERSION="v1.14.0"
+          
+          # 如果有输入版本，使用输入版本
+          if [ -n "${{ inputs.ss_go_version }}" ] && [ "${{ inputs.ss_go_version }}" != "v1.14.0" ]; then
             VERSION="${{ inputs.ss_go_version }}"
-            echo "使用指定版本: $VERSION"
+            echo "使用输入版本: $VERSION"
           else
-            echo "获取最新发布..."
-            VERSION=$(curl -s https://api.github.com/repos/database64128/shadowsocks-go/releases/latest | jq -r '.tag_name')
-            echo "最新版本: $VERSION"
+            echo "尝试获取最新版本..."
+            # 尝试从GitHub API获取最新版本
+            API_RESPONSE=$(curl -s https://api.github.com/repos/database64128/shadowsocks-go/releases/latest)
+            if echo "$API_RESPONSE" | grep -q "tag_name"; then
+              VERSION=$(echo "$API_RESPONSE" | jq -r '.tag_name')
+              echo "从API获取到版本: $VERSION"
+            else
+              VERSION="$DEFAULT_VERSION"
+              echo "API失败，使用默认版本: $VERSION"
+            fi
           fi
           
+          # 确保版本号以v开头
           if [[ ! "$VERSION" =~ ^v ]]; then
             VERSION="v$VERSION"
             echo "标准化版本: $VERSION"
           fi
           
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "最终版本: $VERSION"
-          EOF
-
-      - name: 获取 GHCR 现有版本
-        id: ghcr
-        run: |
-          /bin/bash << 'EOF'
-          TOKEN=$(curl -fsSL "https://ghcr.io/token?scope=repository:${{ github.repository_owner }}/shadowsocks-go:pull" | jq -r '.token // empty')
-          GHCR_V="v0.0.0"
-          if [ -n "$TOKEN" ]; then
-            GHCR_V=$(curl -fsSL -H "Authorization: Bearer $TOKEN" \
-              https://ghcr.io/v2/${{ github.repository_owner }}/shadowsocks-go/tags/list \
-              | jq -r '.tags[]?' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1 || echo "v0.0.0")
-          fi
-          echo "ghcr_version=$GHCR_V" >> $GITHUB_OUTPUT
-          echo "GHCR当前版本: $GHCR_V"
-          EOF
-
-      - name: 版本比对与决策
-        id: decide
-        run: |
-          /bin/bash << 'EOF'
-          OFFICIAL="${{ steps.get_version.outputs.version }}"
-          CURRENT="${{ steps.ghcr.outputs.ghcr_version }}"
-          echo "官方版本: $OFFICIAL"
-          echo "GHCR版本: $CURRENT"
-          
-          if [ "${{ github.event.inputs.force }}" = "true" ]; then
-            echo "强制构建启用"
-            echo "should_build=true" >> $GITHUB_OUTPUT
-          elif [ "$OFFICIAL" != "$CURRENT" ]; then
-            HIGHEST=$(printf '%s\n%s' "$OFFICIAL" "$CURRENT" | sort -V | tail -n1)
-            if [ "$HIGHEST" == "$OFFICIAL" ]; then
-              echo "官方版本更高，需要构建"
-              echo "should_build=true" >> $GITHUB_OUTPUT
-            else
-              echo "GHCR版本更高，不需要构建"
-              echo "should_build=false" >> $GITHUB_OUTPUT
-            fi
-          else
-            echo "版本相同，不需要构建"
-            echo "should_build=false" >> $GITHUB_OUTPUT
-          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
           EOF
 
   build-debian:
     name: Build Debian Images
-    needs: check-version
-    if: needs.check-version.outputs.should_build == 'true' && needs.check-version.outputs.ss_go_version != ''
+    needs: get-version
+    if: ${{ needs.get-version.outputs.ss_go_version != '' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -131,8 +100,9 @@ jobs:
 
       - name: Debug Info
         run: |
-          echo "版本号: ${{ needs.check-version.outputs.ss_go_version }}"
-          echo "是否构建: ${{ needs.check-version.outputs.should_build }}"
+          echo "版本号: ${{ needs.get-version.outputs.ss_go_version }}"
+          echo "GitHub用户: ${{ github.repository_owner }}"
+          echo "仓库名: $(basename ${{ github.repository }})"
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
@@ -152,9 +122,9 @@ jobs:
         id: tags
         run: |
           /bin/bash << 'EOF'
-          VERSION="${{ needs.check-version.outputs.ss_go_version }}"
-          REPO_NAME=$(basename "${{ github.repository }}")
-          REPO_LOWER=$(echo "$REPO_NAME" | tr '[:upper:]' '[:lower:]')
+          VERSION="${{ needs.get-version.outputs.ss_go_version }}"
+          REPO_NAME="shadowsocks-go"
+          REPO_LOWER="shadowsocks-go"
           
           echo "版本号: $VERSION"
           echo "仓库名: $REPO_LOWER"
@@ -188,7 +158,7 @@ jobs:
           push: true
           tags: ${{ steps.tags.outputs.tags }}
           build-args: |
-            SS_GO_VERSION=${{ needs.check-version.outputs.ss_go_version }}
+            SS_GO_VERSION=${{ needs.get-version.outputs.ss_go_version }}
             TARGETVARIANT=${{ matrix.variant }}
           provenance: false
           sbom: false
@@ -196,7 +166,7 @@ jobs:
   create-manifests:
     name: Create Multi-arch Manifests
     needs: build-debian
-    if: needs.check-version.outputs.ss_go_version != ''
+    if: ${{ needs.get-version.outputs.ss_go_version != '' }}
     runs-on: ubuntu-latest
     permissions:
       packages: write
@@ -221,9 +191,9 @@ jobs:
       - name: Create Manifests
         run: |
           /bin/bash << 'EOF'
-          VERSION="${{ needs.check-version.outputs.ss_go_version }}"
-          REPO_NAME=$(basename "${{ github.repository }}")
-          REPO_LOWER=$(echo "$REPO_NAME" | tr '[:upper:]' '[:lower:]')
+          VERSION="${{ needs.get-version.outputs.ss_go_version }}"
+          REPO_NAME="shadowsocks-go"
+          REPO_LOWER="shadowsocks-go"
           GHCR_REPO="ghcr.io/${{ github.repository_owner }}/$REPO_LOWER"
           
           echo "版本号: $VERSION"
@@ -231,8 +201,8 @@ jobs:
           echo "GHCR仓库: $GHCR_REPO"
           
           if [ -z "$VERSION" ]; then
-            echo "错误: 版本号为空，跳过创建manifest"
-            exit 0
+            echo "错误: 版本号为空"
+            exit 1
           fi
           
           echo "为 $GHCR_REPO:$VERSION 创建多架构manifest"
@@ -240,18 +210,8 @@ jobs:
           
           sleep 60
           
-          echo "检查镜像是否存在..."
-          for suffix in amd64v2 amd64v3 arm64; do
-            IMAGE="${GHCR_REPO}:${VERSION}-debian-${suffix}"
-            echo "检查 $IMAGE"
-            if docker manifest inspect "$IMAGE" >/dev/null 2>&1; then
-              echo "✓ $IMAGE 存在"
-            else
-              echo "✗ $IMAGE 不存在"
-            fi
-          done
-          
           echo "创建GHCR manifests..."
+          # 创建带v前缀的版本标签
           docker buildx imagetools create -t "${GHCR_REPO}:${VERSION}-debian" \
             "${GHCR_REPO}:${VERSION}-debian-amd64v2" \
             "${GHCR_REPO}:${VERSION}-debian-amd64v3" \
