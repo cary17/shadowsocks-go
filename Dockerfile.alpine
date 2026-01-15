@@ -1,61 +1,52 @@
 # Dockerfile.alpine
-ARG ALPINE_VERSION=latest
+# 构建阶段
+FROM alpine:latest AS builder
 
-FROM alpine:${ALPINE_VERSION} AS builder
-
-# 安装必要的工具
-RUN apk add --no-cache wget tar zstd
+# 安装下载工具
+RUN apk add --no-cache wget tar zstd ca-certificates
 
 # 构建参数
 ARG VERSION
-ARG TARGETARCH
-ARG TARGETVARIANT
-ARG VARIANT=default
+ARG ARCH
+ARG SS_VERSION
 
 WORKDIR /tmp
 
-# 自动选择 v2 或 v3 版本（仅 x86_64 架构）
+# 根据架构下载正确的包
 RUN set -e && \
-    # 确定架构和变体
-    case "${TARGETARCH}" in \
+    case "$ARCH" in \
         "amd64") \
-            if [ "$VARIANT" = "glibc" ]; then \
-                echo "Error: glibc variant not supported on Alpine" && exit 1; \
+            if [ -z "$SS_VERSION" ]; then \
+                echo "Error: SS_VERSION must be set for amd64" && exit 1; \
             fi; \
-            \
-            # Alpine 默认使用 v2 版本以保证最大兼容性
-            SS_VERSION="v2"; \
-            \
-            # 构建下载 URL
             URL="https://github.com/database64128/shadowsocks-go/releases/download/${VERSION}/shadowsocks-go-${VERSION}-linux-x86-64-${SS_VERSION}.tar.zst"; \
+            echo "Downloading x86_64 ${SS_VERSION} version from: $URL"; \
             ;; \
         "arm64") \
-            SS_VERSION=""; \
             URL="https://github.com/database64128/shadowsocks-go/releases/download/${VERSION}/shadowsocks-go-${VERSION}-linux-arm64.tar.zst"; \
+            echo "Downloading arm64 version from: $URL"; \
             ;; \
         *) \
-            echo "Unsupported architecture: ${TARGETARCH}" && exit 1; \
+            echo "Unsupported architecture: $ARCH" && exit 1; \
             ;; \
     esac && \
     \
-    echo "Downloading from: ${URL}" && \
-    wget -q -O shadowsocks.tar.zst "${URL}" && \
+    wget -q -O shadowsocks.tar.zst "$URL" && \
     tar -I zstd -xvf shadowsocks.tar.zst && \
-    mv shadowsocks-go /usr/local/bin/ && \
-    chmod +x /usr/local/bin/shadowsocks-go && \
-    rm -rf /tmp/*
+    chmod +x shadowsocks-go && \
+    rm -f shadowsocks.tar.zst shadowsocks-go-domain-set-converter
 
-# ========== 最终镜像 ==========
-FROM alpine:${ALPINE_VERSION}
+# 运行时阶段（最小化）
+FROM alpine:latest AS runtime
 
-# 安装 CA 证书
+# 安装最小依赖
 RUN apk add --no-cache ca-certificates && \
     mkdir -p /etc/ss-go
 
-# 复制二进制文件
-COPY --from=builder /usr/local/bin/shadowsocks-go /usr/local/bin/
+# 从构建阶段复制二进制文件
+COPY --from=builder /tmp/shadowsocks-go /usr/local/bin/
 
-# 复制入口脚本和配置生成脚本
+# 复制脚本
 COPY entrypoint.sh /usr/local/bin/
 COPY generate-config.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/generate-config.sh
@@ -71,6 +62,10 @@ ENV SS_MODE=server \
 
 # 工作目录
 WORKDIR /etc/ss-go
+
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD /usr/local/bin/shadowsocks-go -version >/dev/null 2>&1 || exit 1
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["shadowsocks-go", "-c", "/etc/ss-go/config.json"]
