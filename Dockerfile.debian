@@ -7,6 +7,11 @@ ARG TARGETVARIANT="v2"
 WORKDIR /tmp
 
 # 安装必要工具
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends wget zstd ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+# 根据架构选择版本
 RUN ARCH_VARIANT="" && \
     if [ "$TARGETARCH" = "amd64" ]; then \
         if [ "$TARGETVARIANT" = "v3" ]; then \
