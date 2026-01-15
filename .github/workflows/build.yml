@@ -60,7 +60,7 @@ jobs:
           # 检查GHCR是否已存在此版本
           REPO_OWNER="${{ github.repository_owner }}"
           REPO_NAME="shadowsocks-go"
-          IMAGE_TAG="${INPUT_VERSION}-amd64v2"
+          IMAGE_TAG="$INPUT_VERSION"
           
           echo "检查GHCR镜像: ghcr.io/${REPO_OWNER}/${REPO_NAME}:${IMAGE_TAG}"
           
@@ -110,35 +110,14 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           EOF
 
-  build-debian:
-    name: Build Debian Images
+  build-and-push:
+    name: Build and Push Multi-arch Images
     needs: [check-existing, get-version]
     if: ${{ needs.check-existing.outputs.need_build == 'true' && needs.get-version.outputs.ss_go_version != '' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-    outputs:
-      ss_go_version: ${{ needs.get-version.outputs.ss_go_version }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: "x86-64-v2"
-            arch: amd64
-            variant: v2
-            platform: linux/amd64/v2
-            suffix: amd64v2
-          - name: "x86-64-v3"
-            arch: amd64
-            variant: v3
-            platform: linux/amd64/v3
-            suffix: amd64v3
-          - name: "ARM64"
-            arch: arm64
-            variant: ""
-            platform: linux/arm64
-            suffix: arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -155,9 +134,7 @@ jobs:
       - name: Debug Info
         run: |
           echo "版本号: ${{ needs.get-version.outputs.ss_go_version }}"
-          echo "当前架构: ${{ matrix.arch }}"
-          echo "当前变体: ${{ matrix.variant }}"
-          echo "平台: ${{ matrix.platform }}"
+          echo "GitHub用户: ${{ github.repository_owner }}"
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
@@ -190,170 +167,33 @@ jobs:
           fi
           
           GHCR_REPO="ghcr.io/${{ github.repository_owner }}/$REPO_LOWER"
-          TAGS="${GHCR_REPO}:${VERSION}-${{ matrix.suffix }}"
-          TAGS="${TAGS},${GHCR_REPO}:latest-${{ matrix.suffix }}"
+          TAGS="${GHCR_REPO}:${VERSION},${GHCR_REPO}:latest"
           
           if [ -n "${{ env.DOCKERHUB_USERNAME }}" ]; then
             DOCKERHUB_REPO="${{ env.DOCKERHUB_USERNAME }}/$REPO_LOWER"
-            TAGS="${TAGS},${DOCKERHUB_REPO}:${VERSION}-${{ matrix.suffix }}"
-            TAGS="${TAGS},${DOCKERHUB_REPO}:latest-${{ matrix.suffix }}"
+            TAGS="${TAGS},${DOCKERHUB_REPO}:${VERSION},${DOCKERHUB_REPO}:latest"
           fi
           
           echo "标签: $TAGS"
           echo "tags=$TAGS" >> $GITHUB_OUTPUT
-          echo "ghcr_repo=$GHCR_REPO" >> $GITHUB_OUTPUT
           EOF
 
-      - name: Build and Push
+      - name: Build and Push Multi-arch Images
         uses: docker/build-push-action@v5
         with:
           context: .
           file: Dockerfile.debian
-          platforms: ${{ matrix.platform }}
+          platforms: linux/amd64/v2,linux/amd64/v3,linux/arm64
           push: true
           tags: ${{ steps.tags.outputs.tags }}
           build-args: |
             SS_GO_VERSION=${{ needs.get-version.outputs.ss_go_version }}
-            TARGETARCH=${{ matrix.arch }}
-            TARGETVARIANT=${{ matrix.variant }}
           provenance: false
           sbom: false
 
-  create-manifests:
-    name: Create Multi-arch Manifests
-    needs: build-debian
-    if: ${{ needs.build-debian.outputs.ss_go_version != '' }}
-    runs-on: ubuntu-latest
-    permissions:
-      packages: write
-    steps:
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Login to Docker Hub
-        if: env.DOCKERHUB_TOKEN != ''
-        uses: docker/login-action@v3
-        with:
-          username: ${{ env.DOCKERHUB_USERNAME }}
-          password: ${{ env.DOCKERHUB_TOKEN }}
-
-      - name: Create Manifests with Annotations
-        run: |
-          /bin/bash << 'EOF'
-          VERSION="${{ needs.build-debian.outputs.ss_go_version }}"
-          REPO_NAME="shadowsocks-go"
-          REPO_LOWER="shadowsocks-go"
-          GHCR_REPO="ghcr.io/${{ github.repository_owner }}/$REPO_LOWER"
-          
-          echo "版本号: $VERSION"
-          echo "GHCR仓库: $GHCR_REPO"
-          
-          echo "等待镜像可用..."
-          sleep 30
-          
-          echo "创建带变体注解的 manifests..."
-          
-          # 创建带变体信息的 manifests
-          # 使用 docker manifest create 命令，可以手动设置变体
-          
-          # 创建 latest 多架构manifest
-          docker manifest create "${GHCR_REPO}:latest" \
-            --amend "${GHCR_REPO}:${VERSION}-amd64v2" \
-            --amend "${GHCR_REPO}:${VERSION}-amd64v3" \
-            --amend "${GHCR_REPO}:${VERSION}-arm64"
-          
-          # 为每个架构设置正确的注解
-          docker manifest annotate "${GHCR_REPO}:latest" \
-            "${GHCR_REPO}:${VERSION}-amd64v2" \
-            --arch amd64 --variant v2 --os linux
-          
-          docker manifest annotate "${GHCR_REPO}:latest" \
-            "${GHCR_REPO}:${VERSION}-amd64v3" \
-            --arch amd64 --variant v3 --os linux
-          
-          docker manifest annotate "${GHCR_REPO}:latest" \
-            "${GHCR_REPO}:${VERSION}-arm64" \
-            --arch arm64 --os linux
-          
-          # 推送 manifest
-          docker manifest push "${GHCR_REPO}:latest"
-          
-          # 创建版本标签
-          docker manifest create "${GHCR_REPO}:${VERSION}" \
-            --amend "${GHCR_REPO}:${VERSION}-amd64v2" \
-            --amend "${GHCR_REPO}:${VERSION}-amd64v3" \
-            --amend "${GHCR_REPO}:${VERSION}-arm64"
-          
-          docker manifest annotate "${GHCR_REPO}:${VERSION}" \
-            "${GHCR_REPO}:${VERSION}-amd64v2" \
-            --arch amd64 --variant v2 --os linux
-          
-          docker manifest annotate "${GHCR_REPO}:${VERSION}" \
-            "${GHCR_REPO}:${VERSION}-amd64v3" \
-            --arch amd64 --variant v3 --os linux
-          
-          docker manifest annotate "${GHCR_REPO}:${VERSION}" \
-            "${GHCR_REPO}:${VERSION}-arm64" \
-            --arch arm64 --os linux
-          
-          docker manifest push "${GHCR_REPO}:${VERSION}"
-          
-          if [ -n "${{ env.DOCKERHUB_USERNAME }}" ]; then
-            DOCKERHUB_REPO="${{ env.DOCKERHUB_USERNAME }}/$REPO_LOWER"
-            echo "为 Docker Hub 创建 manifests..."
-            
-            docker manifest create "${DOCKERHUB_REPO}:latest" \
-              --amend "${DOCKERHUB_REPO}:${VERSION}-amd64v2" \
-              --amend "${DOCKERHUB_REPO}:${VERSION}-amd64v3" \
-              --amend "${DOCKERHUB_REPO}:${VERSION}-arm64"
-            
-            docker manifest annotate "${DOCKERHUB_REPO}:latest" \
-              "${DOCKERHUB_REPO}:${VERSION}-amd64v2" \
-              --arch amd64 --variant v2 --os linux
-            
-            docker manifest annotate "${DOCKERHUB_REPO}:latest" \
-              "${DOCKERHUB_REPO}:${VERSION}-amd64v3" \
-              --arch amd64 --variant v3 --os linux
-            
-            docker manifest annotate "${DOCKERHUB_REPO}:latest" \
-              "${DOCKERHUB_REPO}:${VERSION}-arm64" \
-              --arch arm64 --os linux
-            
-            docker manifest push "${DOCKERHUB_REPO}:latest"
-            
-            docker manifest create "${DOCKERHUB_REPO}:${VERSION}" \
-              --amend "${DOCKERHUB_REPO}:${VERSION}-amd64v2" \
-              --amend "${DOCKERHUB_REPO}:${VERSION}-amd64v3" \
-              --amend "${DOCKERHUB_REPO}:${VERSION}-arm64"
-            
-            docker manifest annotate "${DOCKERHUB_REPO}:${VERSION}" \
-              "${DOCKERHUB_REPO}:${VERSION}-amd64v2" \
-              --arch amd64 --variant v2 --os linux
-            
-            docker manifest annotate "${DOCKERHUB_REPO}:${VERSION}" \
-              "${DOCKERHUB_REPO}:${VERSION}-amd64v3" \
-              --arch amd64 --variant v3 --os linux
-            
-            docker manifest annotate "${DOCKERHUB_REPO}:${VERSION}" \
-              "${DOCKERHUB_REPO}:${VERSION}-arm64" \
-              --arch arm64 --os linux
-            
-            docker manifest push "${DOCKERHUB_REPO}:${VERSION}"
-          fi
-          
-          echo "Manifests创建完成"
-          EOF
-
-  verify-manifest:
-    name: Verify Manifest
-    needs: create-manifests
+  verify:
+    name: Verify Build
+    needs: build-and-push
     runs-on: ubuntu-latest
     steps:
       - name: 登录到 GHCR
@@ -363,25 +203,38 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 验证 Manifest
+      - name: 验证镜像
         run: |
           /bin/bash << 'EOF'
-          VERSION="${{ needs.build-debian.outputs.ss_go_version }}"
+          VERSION="${{ needs.get-version.outputs.ss_go_version }}"
           REPO="ghcr.io/${{ github.repository_owner }}/shadowsocks-go"
           
-          echo "=== 验证多架构 manifests ==="
+          echo "=== 镜像验证 ==="
           echo ""
           
-          echo "1. latest 标签的 manifest 详情:"
+          echo "1. 验证 latest 标签的多架构 manifest:"
           docker manifest inspect "${REPO}:latest" | jq '.manifests[] | {architecture: .platform.architecture, variant: .platform.variant, os: .platform.os}'
           
           echo ""
-          echo "2. ${VERSION} 标签的 manifest 详情:"
+          echo "2. 验证 ${VERSION} 标签的多架构 manifest:"
           docker manifest inspect "${REPO}:${VERSION}" | jq '.manifests[] | {architecture: .platform.architecture, variant: .platform.variant, os: .platform.os}'
           
           echo ""
-          echo "3. 架构分布:"
-          echo "   - amd64/v2: x86-64-v2 (基本AVX指令集)"
-          echo "   - amd64/v3: x86-64-v3 (支持AVX2指令集)"
-          echo "   - arm64:    ARM64架构"
+          echo "3. 测试拉取镜像:"
+          echo "   拉取 latest 标签..."
+          docker pull "${REPO}:latest" --quiet
+          echo "   拉取 ${VERSION} 标签..."
+          docker pull "${REPO}:${VERSION}" --quiet
+          
+          echo ""
+          echo "4. 架构支持:"
+          echo "   ✓ x86-64-v2 (amd64/v2) - 支持AVX指令集"
+          echo "   ✓ x86-64-v3 (amd64/v3) - 支持AVX2指令集"  
+          echo "   ✓ ARM64 - ARM64架构"
+          
+          echo ""
+          echo "5. 使用示例:"
+          echo "   docker run -d --name ss-go ${REPO}:latest -confPath /etc/ss-go/config.json"
+          echo "   或指定版本:"
+          echo "   docker run -d --name ss-go ${REPO}:${VERSION} -confPath /etc/ss-go/config.json"
           EOF
