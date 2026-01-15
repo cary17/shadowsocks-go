@@ -2,8 +2,8 @@ version: '3.8'
 
 services:
   shadowsocks-go:
-    image: ghcr.io/your-username/shadowsocks-go:latest
-    # 或者使用特定版本：ghcr.io/your-username/shadowsocks-go:1.11.0
+    # 使用您的实际用户名和仓库名
+    image: ghcr.io/cary17/YOUR_REPO_NAME:latest
     container_name: shadowsocks-go
     restart: unless-stopped
     ports:
