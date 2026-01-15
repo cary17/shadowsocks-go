@@ -4,14 +4,10 @@ on:
   workflow_dispatch:
     inputs:
       ss_go_version:
-        description: 'Shadowsocks-go version (e.g., 1.14.0 or v1.14.0)'
+        description: 'Shadowsocks-go version (e.g., v1.14.0)'
         required: false
         type: string
-      force_build:
-        description: 'Force build even if version exists'
-        required: false
-        default: false
-        type: boolean
+        default: ''
   schedule:
     - cron: '0 * * * *'
 
@@ -20,200 +16,131 @@ jobs:
     name: Check Latest Version
     runs-on: ubuntu-latest
     outputs:
-      should_build: ${{ steps.compare.outputs.should_build }}
       ss_go_version: ${{ steps.get_version.outputs.version }}
-      version_no_v: ${{ steps.get_version.outputs.version_no_v }}
     steps:
-      - name: Get Latest Release Version
+      - name: Get Version
         id: get_version
         run: |
           if [ -n "${{ inputs.ss_go_version }}" ]; then
+            # 用户指定版本
             VERSION="${{ inputs.ss_go_version }}"
             echo "Using specified version: $VERSION"
           else
+            # 获取最新版本
             echo "Fetching latest release..."
             VERSION=$(curl -s https://api.github.com/repos/database64128/shadowsocks-go/releases/latest | jq -r '.tag_name')
             echo "Latest version: $VERSION"
           fi
           
-          # 确保版本号以v开头（如果用户输入的是1.14.0，转换为v1.14.0）
-          if [[ ! "$VERSION" =~ ^v ]]; then
-            VERSION="v$VERSION"
-            echo "Normalized version: $VERSION"
-          fi
-          
-          # 同时输出带v和不带v的版本
-          VERSION_NO_V="${VERSION#v}"
-          
+          # 确保版本号格式正确（应该已经是 v1.x.x 格式）
+          echo "Final version: $VERSION"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "version_no_v=$VERSION_NO_V" >> $GITHUB_OUTPUT
-          
-          echo "Full version: $VERSION"
-          echo "Version without v: $VERSION_NO_V"
 
-      - name: Compare with GHCR Version
-        id: compare
-        run: |
-          if [ "${{ inputs.force_build }}" = "true" ]; then
-            echo "Force build enabled"
-            echo "should_build=true" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-          
-          echo "Skipping GHCR check for now (will always build)"
-          echo "should_build=true" >> $GITHUB_OUTPUT
-
-  build-single:
-    name: Build Single Architecture (Test)
+  build-debian:
+    name: Build Debian Images
     needs: check-version
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Debug Info
-        run: |
-          echo "Version with v: ${{ needs.check-version.outputs.ss_go_version }}"
-          echo "Version without v: ${{ needs.check-version.outputs.version_no_v }}"
-          
-          # 测试下载
-          VERSION="${{ needs.check-version.outputs.ss_go_version }}"
-          URL="https://github.com/database64128/shadowsocks-go/releases/download/${VERSION}/shadowsocks-go-${VERSION}-linux-x86-64-v2.tar.zst"
-          echo "Testing download URL: $URL"
-          
-          if curl -s -I "$URL" | head -n1 | grep "200"; then
-            echo "✓ URL exists"
-            # 尝试下载前100字节测试
-            curl -s -r 0-100 "$URL" | wc -c
-          else
-            echo "✗ URL not found"
-          fi
-
-      - name: Create Fixed Dockerfile
-        run: |
-          # 创建修复版的Dockerfile
-          cat > Dockerfile.fixed << 'EOF'
-          FROM alpine:latest as builder
-          
-          ARG TARGETARCH
-          ARG SS_GO_VERSION
-          ARG TARGETVARIANT="v2"
-          
-          RUN echo "=== BUILD INFO ==="
-          RUN echo "TARGETARCH: $TARGETARCH"
-          RUN echo "SS_GO_VERSION: $SS_GO_VERSION"
-          RUN echo "TARGETVARIANT: $TARGETVARIANT"
-          
-          RUN apk add --no-cache wget
-          
-          WORKDIR /tmp
-          
-          RUN ARCH_VARIANT="" && \
-              if [ "$TARGETARCH" = "amd64" ]; then \
-                  if [ "$TARGETVARIANT" = "v3" ]; then \
-                      ARCH_VARIANT="x86-64-v3"; \
-                  else \
-                      ARCH_VARIANT="x86-64-v2"; \
-                  fi; \
-              elif [ "$TARGETARCH" = "arm64" ]; then \
-                  ARCH_VARIANT="arm64"; \
-              fi && \
-              echo "ARCH_VARIANT: $ARCH_VARIANT" && \
-              PACKAGE_NAME="shadowsocks-go-${SS_GO_VERSION}-linux-${ARCH_VARIANT}.tar.zst" && \
-              echo "PACKAGE_NAME: $PACKAGE_NAME" && \
-              URL="https://github.com/database64128/shadowsocks-go/releases/download/${SS_GO_VERSION}/${PACKAGE_NAME}" && \
-              echo "DOWNLOAD URL: $URL" && \
-              wget --no-verbose --show-progress "$URL" && \
-              echo "Download successful!" && \
-              ls -la *.tar.zst && \
-              tar -xf "$PACKAGE_NAME" && \
-              chmod +x shadowsocks-go && \
-              ./shadowsocks-go --version
-          
-          FROM alpine:latest
-          COPY --from=builder /tmp/shadowsocks-go /usr/local/bin/
-          RUN chmod +x /usr/local/bin/shadowsocks-go
-          CMD ["shadowsocks-go", "--version"]
-          EOF
-          
-          echo "=== Dockerfile.fixed ==="
-          cat Dockerfile.fixed
-
-      - name: Test Build
-        run: |
-          VERSION="${{ needs.check-version.outputs.ss_go_version }}"
-          echo "Building with version: $VERSION"
-          
-          # 测试构建
-          docker buildx build \
-            -f Dockerfile.fixed \
-            --platform linux/amd64 \
-            --build-arg "SS_GO_VERSION=$VERSION" \
-            --build-arg "TARGETVARIANT=v2" \
-            --progress plain \
-            --no-cache \
-            -t test-image \
-            .
-
-  build-all:
-    name: Build All Images
-    needs: [check-version, build-single]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
           - name: "Debian x86-64-v2"
-            file: Dockerfile.debian
             arch: amd64
             variant: v2
             platform: linux/amd64
-            tags: |
-              ghcr.io/${{ github.repository_owner }}/$(basename ${{ github.repository }}):${{ needs.check-version.outputs.version_no_v }}-debian-amd64v2
-              ghcr.io/${{ github.repository_owner }}/$(basename ${{ github.repository }}):latest-debian-amd64v2
+            suffix: amd64v2
           - name: "Debian x86-64-v3"
-            file: Dockerfile.debian
             arch: amd64
             variant: v3
             platform: linux/amd64
-            tags: |
-              ghcr.io/${{ github.repository_owner }}/$(basename ${{ github.repository }}):${{ needs.check-version.outputs.version_no_v }}-debian-amd64v3
-              ghcr.io/${{ github.repository_owner }}/$(basename ${{ github.repository }}):latest-debian-amd64v3
+            suffix: amd64v3
           - name: "Debian ARM64"
-            file: Dockerfile.debian
             arch: arm64
             variant: ""
             platform: linux/arm64
-            tags: |
-              ghcr.io/${{ github.repository_owner }}/$(basename ${{ github.repository }}):${{ needs.check-version.outputs.version_no_v }}-debian-arm64
-              ghcr.io/${{ github.repository_owner }}/$(basename ${{ github.repository }}):latest-debian-arm64
+            suffix: arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Debug Info
+        run: |
+          echo "Building version: ${{ needs.check-version.outputs.ss_go_version }}"
+          echo "Arch: ${{ matrix.arch }}"
+          echo "Variant: ${{ matrix.variant }}"
+          echo "Suffix: ${{ matrix.suffix }}"
+          
+          # 测试下载
+          VERSION="${{ needs.check-version.outputs.ss_go_version }}"
+          ARCH="x86-64-v2"
+          URL1="https://github.com/database64128/shadowsocks-go/releases/download/${VERSION}/shadowsocks-go-${VERSION}-linux-${ARCH}.tar.zst"
+          URL2="https://github.com/database64128/shadowsocks-go/releases/download/${VERSION}/shadowsocks-go-${VERSION#v}-linux-${ARCH}.tar.zst"
+          
+          echo "Testing URL1: $URL1"
+          curl -s -I "$URL1" | head -n1
+          echo "Testing URL2: $URL2"
+          curl -s -I "$URL2" | head -n1
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and Push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.debian
+          platforms: ${{ matrix.platform }}
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/$(basename ${{ github.repository }}):${{ needs.check-version.outputs.ss_go_version }}-debian-${{ matrix.suffix }}
+            ghcr.io/${{ github.repository_owner }}/$(basename ${{ github.repository }}):latest-debian-${{ matrix.suffix }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/$(basename ${{ github.repository }}):${{ needs.check-version.outputs.ss_go_version }}-debian-${{ matrix.suffix }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/$(basename ${{ github.repository }}):latest-debian-${{ matrix.suffix }}
+          build-args: |
+            SS_GO_VERSION=${{ needs.check-version.outputs.ss_go_version }}
+            TARGETVARIANT=${{ matrix.variant }}
+          provenance: false
+          sbom: false
+
+  build-alpine:
+    name: Build Alpine Images
+    needs: check-version
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
           - name: "Alpine x86-64-v2"
-            file: Dockerfile.alpine
             arch: amd64
             variant: v2
             platform: linux/amd64
-            tags: |
-              ghcr.io/${{ github.repository_owner }}/$(basename ${{ github.repository }}):${{ needs.check-version.outputs.version_no_v }}-alpine-amd64v2
-              ghcr.io/${{ github.repository_owner }}/$(basename ${{ github.repository }}):latest-alpine-amd64v2
+            suffix: amd64v2
           - name: "Alpine x86-64-v3"
-            file: Dockerfile.alpine
             arch: amd64
             variant: v3
             platform: linux/amd64
-            tags: |
-              ghcr.io/${{ github.repository_owner }}/$(basename ${{ github.repository }}):${{ needs.check-version.outputs.version_no_v }}-alpine-amd64v3
-              ghcr.io/${{ github.repository_owner }}/$(basename ${{ github.repository }}):latest-alpine-amd64v3
+            suffix: amd64v3
           - name: "Alpine ARM64"
-            file: Dockerfile.alpine
             arch: arm64
             variant: ""
             platform: linux/arm64
-            tags: |
-              ghcr.io/${{ github.repository_owner }}/$(basename ${{ github.repository }}):${{ needs.check-version.outputs.version_no_v }}-alpine-arm64
-              ghcr.io/${{ github.repository_owner }}/$(basename ${{ github.repository }}):latest-alpine-arm64
+            suffix: arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -237,52 +164,27 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Prepare Tags for Docker Hub
-        id: dockerhub_tags
-        run: |
-          VERSION_NO_V="${{ needs.check-version.outputs.version_no_v }}"
-          DOCKERHUB_REPO="${{ secrets.DOCKERHUB_USERNAME }}/$(basename ${{ github.repository }})"
-          
-          if [ "${{ matrix.variant }}" = "v2" ]; then
-            VARIANT_SUFFIX="-amd64v2"
-          elif [ "${{ matrix.variant }}" = "v3" ]; then
-            VARIANT_SUFFIX="-amd64v3"
-          else
-            VARIANT_SUFFIX="-arm64"
-          fi
-          
-          if [[ "${{ matrix.file }}" == *"debian"* ]]; then
-            BASE_TAG="debian"
-          else
-            BASE_TAG="alpine"
-          fi
-          
-          TAGS="${DOCKERHUB_REPO}:${VERSION_NO_V}-${BASE_TAG}${VARIANT_SUFFIX}"
-          TAGS="${TAGS},${DOCKERHUB_REPO}:latest-${BASE_TAG}${VARIANT_SUFFIX}"
-          
-          echo "dockerhub_tags=$TAGS" >> $GITHUB_OUTPUT
-
       - name: Build and Push
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ${{ matrix.file }}
+          file: Dockerfile.alpine
           platforms: ${{ matrix.platform }}
           push: true
           tags: |
-            ${{ matrix.tags }}
-            ${{ steps.dockerhub_tags.outputs.dockerhub_tags }}
+            ghcr.io/${{ github.repository_owner }}/$(basename ${{ github.repository }}):${{ needs.check-version.outputs.ss_go_version }}-alpine-${{ matrix.suffix }}
+            ghcr.io/${{ github.repository_owner }}/$(basename ${{ github.repository }}):latest-alpine-${{ matrix.suffix }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/$(basename ${{ github.repository }}):${{ needs.check-version.outputs.ss_go_version }}-alpine-${{ matrix.suffix }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/$(basename ${{ github.repository }}):latest-alpine-${{ matrix.suffix }}
           build-args: |
             SS_GO_VERSION=${{ needs.check-version.outputs.ss_go_version }}
             TARGETVARIANT=${{ matrix.variant }}
-          cache-from: type=gha,scope=${{ matrix.name }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
           provenance: false
           sbom: false
 
   create-manifests:
-    name: Create Manifests
-    needs: build-all
+    name: Create Multi-arch Manifests
+    needs: [build-debian, build-alpine]
     runs-on: ubuntu-latest
     steps:
       - name: Set up Docker Buildx
@@ -301,84 +203,74 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Create Debian Manifest
+      - name: Create Manifests
         run: |
-          VERSION_NO_V="${{ needs.check-version.outputs.version_no_v }}"
+          VERSION="${{ needs.check-version.outputs.ss_go_version }}"
           REPO_NAME=$(basename "${{ github.repository }}")
           GHCR_REPO="ghcr.io/${{ github.repository_owner }}/${REPO_NAME}"
           DOCKERHUB_REPO="${{ secrets.DOCKERHUB_USERNAME }}/${REPO_NAME}"
           
-          echo "Creating Debian multi-arch manifest for version $VERSION_NO_V"
+          echo "Creating manifests for version: $VERSION"
           
-          # GHCR
-          docker buildx imagetools create -t ${GHCR_REPO}:${VERSION_NO_V}-debian \
-            ${GHCR_REPO}:${VERSION_NO_V}-debian-amd64v2 \
-            ${GHCR_REPO}:${VERSION_NO_V}-debian-amd64v3 \
-            ${GHCR_REPO}:${VERSION_NO_V}-debian-arm64
+          # Debian manifests
+          docker buildx imagetools create -t ${GHCR_REPO}:${VERSION}-debian \
+            ${GHCR_REPO}:${VERSION}-debian-amd64v2 \
+            ${GHCR_REPO}:${VERSION}-debian-amd64v3 \
+            ${GHCR_REPO}:${VERSION}-debian-arm64
           
-          docker buildx imagetools create -t ${GHCR_REPO}:${VERSION_NO_V} \
-            ${GHCR_REPO}:${VERSION_NO_V}-debian-amd64v2 \
-            ${GHCR_REPO}:${VERSION_NO_V}-debian-amd64v3 \
-            ${GHCR_REPO}:${VERSION_NO_V}-debian-arm64
+          docker buildx imagetools create -t ${GHCR_REPO}:${VERSION} \
+            ${GHCR_REPO}:${VERSION}-debian-amd64v2 \
+            ${GHCR_REPO}:${VERSION}-debian-amd64v3 \
+            ${GHCR_REPO}:${VERSION}-debian-arm64
           
           docker buildx imagetools create -t ${GHCR_REPO}:latest-debian \
-            ${GHCR_REPO}:${VERSION_NO_V}-debian-amd64v2 \
-            ${GHCR_REPO}:${VERSION_NO_V}-debian-amd64v3 \
-            ${GHCR_REPO}:${VERSION_NO_V}-debian-arm64
+            ${GHCR_REPO}:${VERSION}-debian-amd64v2 \
+            ${GHCR_REPO}:${VERSION}-debian-amd64v3 \
+            ${GHCR_REPO}:${VERSION}-debian-arm64
           
           docker buildx imagetools create -t ${GHCR_REPO}:latest \
-            ${GHCR_REPO}:${VERSION_NO_V}-debian-amd64v2 \
-            ${GHCR_REPO}:${VERSION_NO_V}-debian-amd64v3 \
-            ${GHCR_REPO}:${VERSION_NO_V}-debian-arm64
+            ${GHCR_REPO}:${VERSION}-debian-amd64v2 \
+            ${GHCR_REPO}:${VERSION}-debian-amd64v3 \
+            ${GHCR_REPO}:${VERSION}-debian-arm64
           
-          # Docker Hub
-          docker buildx imagetools create -t ${DOCKERHUB_REPO}:${VERSION_NO_V}-debian \
-            ${DOCKERHUB_REPO}:${VERSION_NO_V}-debian-amd64v2 \
-            ${DOCKERHUB_REPO}:${VERSION_NO_V}-debian-amd64v3 \
-            ${DOCKERHUB_REPO}:${VERSION_NO_V}-debian-arm64
-          
-          docker buildx imagetools create -t ${DOCKERHUB_REPO}:${VERSION_NO_V} \
-            ${DOCKERHUB_REPO}:${VERSION_NO_V}-debian-amd64v2 \
-            ${DOCKERHUB_REPO}:${VERSION_NO_V}-debian-amd64v3 \
-            ${DOCKERHUB_REPO}:${VERSION_NO_V}-debian-arm64
-          
-          docker buildx imagetools create -t ${DOCKERHUB_REPO}:latest-debian \
-            ${DOCKERHUB_REPO}:${VERSION_NO_V}-debian-amd64v2 \
-            ${DOCKERHUB_REPO}:${VERSION_NO_V}-debian-amd64v3 \
-            ${DOCKERHUB_REPO}:${VERSION_NO_V}-debian-arm64
-          
-          docker buildx imagetools create -t ${DOCKERHUB_REPO}:latest \
-            ${DOCKERHUB_REPO}:${VERSION_NO_V}-debian-amd64v2 \
-            ${DOCKERHUB_REPO}:${VERSION_NO_V}-debian-amd64v3 \
-            ${DOCKERHUB_REPO}:${VERSION_NO_V}-debian-arm64
-
-      - name: Create Alpine Manifest
-        run: |
-          VERSION_NO_V="${{ needs.check-version.outputs.version_no_v }}"
-          REPO_NAME=$(basename "${{ github.repository }}")
-          GHCR_REPO="ghcr.io/${{ github.repository_owner }}/${REPO_NAME}"
-          DOCKERHUB_REPO="${{ secrets.DOCKERHUB_USERNAME }}/${REPO_NAME}"
-          
-          echo "Creating Alpine multi-arch manifest for version $VERSION_NO_V"
-          
-          # GHCR
-          docker buildx imagetools create -t ${GHCR_REPO}:${VERSION_NO_V}-alpine \
-            ${GHCR_REPO}:${VERSION_NO_V}-alpine-amd64v2 \
-            ${GHCR_REPO}:${VERSION_NO_V}-alpine-amd64v3 \
-            ${GHCR_REPO}:${VERSION_NO_V}-alpine-arm64
+          # Alpine manifests
+          docker buildx imagetools create -t ${GHCR_REPO}:${VERSION}-alpine \
+            ${GHCR_REPO}:${VERSION}-alpine-amd64v2 \
+            ${GHCR_REPO}:${VERSION}-alpine-amd64v3 \
+            ${GHCR_REPO}:${VERSION}-alpine-arm64
           
           docker buildx imagetools create -t ${GHCR_REPO}:latest-alpine \
-            ${GHCR_REPO}:${VERSION_NO_V}-alpine-amd64v2 \
-            ${GHCR_REPO}:${VERSION_NO_V}-alpine-amd64v3 \
-            ${GHCR_REPO}:${VERSION_NO_V}-alpine-arm64
+            ${GHCR_REPO}:${VERSION}-alpine-amd64v2 \
+            ${GHCR_REPO}:${VERSION}-alpine-amd64v3 \
+            ${GHCR_REPO}:${VERSION}-alpine-arm64
           
-          # Docker Hub
-          docker buildx imagetools create -t ${DOCKERHUB_REPO}:${VERSION_NO_V}-alpine \
-            ${DOCKERHUB_REPO}:${VERSION_NO_V}-alpine-amd64v2 \
-            ${DOCKERHUB_REPO}:${VERSION_NO_V}-alpine-amd64v3 \
-            ${DOCKERHUB_REPO}:${VERSION_NO_V}-alpine-arm64
+          # Docker Hub manifests
+          docker buildx imagetools create -t ${DOCKERHUB_REPO}:${VERSION}-debian \
+            ${DOCKERHUB_REPO}:${VERSION}-debian-amd64v2 \
+            ${DOCKERHUB_REPO}:${VERSION}-debian-amd64v3 \
+            ${DOCKERHUB_REPO}:${VERSION}-debian-arm64
+          
+          docker buildx imagetools create -t ${DOCKERHUB_REPO}:${VERSION} \
+            ${DOCKERHUB_REPO}:${VERSION}-debian-amd64v2 \
+            ${DOCKERHUB_REPO}:${VERSION}-debian-amd64v3 \
+            ${DOCKERHUB_REPO}:${VERSION}-debian-arm64
+          
+          docker buildx imagetools create -t ${DOCKERHUB_REPO}:latest-debian \
+            ${DOCKERHUB_REPO}:${VERSION}-debian-amd64v2 \
+            ${DOCKERHUB_REPO}:${VERSION}-debian-amd64v3 \
+            ${DOCKERHUB_REPO}:${VERSION}-debian-arm64
+          
+          docker buildx imagetools create -t ${DOCKERHUB_REPO}:latest \
+            ${DOCKERHUB_REPO}:${VERSION}-debian-amd64v2 \
+            ${DOCKERHUB_REPO}:${VERSION}-debian-amd64v3 \
+            ${DOCKERHUB_REPO}:${VERSION}-debian-arm64
+          
+          docker buildx imagetools create -t ${DOCKERHUB_REPO}:${VERSION}-alpine \
+            ${DOCKERHUB_REPO}:${VERSION}-alpine-amd64v2 \
+            ${DOCKERHUB_REPO}:${VERSION}-alpine-amd64v3 \
+            ${DOCKERHUB_REPO}:${VERSION}-alpine-arm64
           
           docker buildx imagetools create -t ${DOCKERHUB_REPO}:latest-alpine \
-            ${DOCKERHUB_REPO}:${VERSION_NO_V}-alpine-amd64v2 \
-            ${DOCKERHUB_REPO}:${VERSION_NO_V}-alpine-amd64v3 \
-            ${DOCKERHUB_REPO}:${VERSION_NO_V}-alpine-arm64
+            ${DOCKERHUB_REPO}:${VERSION}-alpine-amd64v2 \
+            ${DOCKERHUB_REPO}:${VERSION}-alpine-amd64v3 \
+            ${DOCKERHUB_REPO}:${VERSION}-alpine-arm64
