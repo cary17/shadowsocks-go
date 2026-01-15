@@ -1,8 +1,8 @@
 FROM debian:stable-slim AS builder
 
 ARG TARGETARCH
+ARG TARGETVARIANT
 ARG SS_GO_VERSION
-ARG TARGETVARIANT="v2"
 
 WORKDIR /tmp
 
@@ -11,67 +11,75 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends wget curl zstd ca-certificates jq && \
     rm -rf /var/lib/apt/lists/*
 
-# 根据架构选择版本
+# 根据架构选择版本 - 这里需要正确设置 ARCH_VARIANT
 RUN /bin/bash << 'EOF'
+set -e
+
+# 显示传入的参数
+echo "TARGETARCH: $TARGETARCH"
+echo "TARGETVARIANT: $TARGETVARIANT"
+echo "SS_GO_VERSION: $SS_GO_VERSION"
+
+# 根据架构和变体选择正确的包
 ARCH_VARIANT=""
 if [ "$TARGETARCH" = "amd64" ]; then
     if [ "$TARGETVARIANT" = "v3" ]; then
         ARCH_VARIANT="x86-64-v3"
-        echo "Using x86-64-v3"
+        echo "使用 x86-64-v3"
     else
         ARCH_VARIANT="x86-64-v2"
-        echo "Using x86-64-v2"
+        echo "使用 x86-64-v2"
     fi
 elif [ "$TARGETARCH" = "arm64" ]; then
     ARCH_VARIANT="arm64"
-    echo "Using arm64"
+    echo "使用 arm64"
 else
-    echo "Unsupported architecture: $TARGETARCH"
+    echo "不支持的架构: $TARGETARCH"
     exit 1
 fi
 
-echo "Selected architecture: $ARCH_VARIANT"
-echo "Version: $SS_GO_VERSION"
+echo "选择的架构变体: $ARCH_VARIANT"
+echo "版本: $SS_GO_VERSION"
 
 # 包名格式：shadowsocks-go-v1.14.0-linux-x86-64-v3.tar.zst
 PACKAGE_NAME="shadowsocks-go-${SS_GO_VERSION}-linux-${ARCH_VARIANT}.tar.zst"
-echo "Package name: $PACKAGE_NAME"
+echo "包名: $PACKAGE_NAME"
 
 # 使用GitHub API获取真实的下载URL
-echo "Fetching download URL from GitHub API..."
+echo "从GitHub API获取下载URL..."
 API_URL="https://api.github.com/repos/database64128/shadowsocks-go/releases/tags/${SS_GO_VERSION}"
 echo "API URL: $API_URL"
 
 # 从GitHub API获取asset信息
 ASSET_INFO=$(curl -s -H "Accept: application/vnd.github.v3+json" "$API_URL")
 if [ -z "$ASSET_INFO" ]; then
-    echo "ERROR: Failed to fetch release info"
+    echo "错误: 无法获取发布信息"
     exit 1
 fi
 
 # 查找匹配的asset
 DOWNLOAD_URL=$(echo "$ASSET_INFO" | jq -r --arg name "$PACKAGE_NAME" '.assets[] | select(.name == $name) | .browser_download_url')
 if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
-    echo "ERROR: Package $PACKAGE_NAME not found in release $SS_GO_VERSION"
-    echo "Available packages:"
+    echo "错误: 在发布 $SS_GO_VERSION 中找不到包 $PACKAGE_NAME"
+    echo "可用包:"
     echo "$ASSET_INFO" | jq -r '.assets[].name'
     exit 1
 fi
 
-echo "Found download URL: $DOWNLOAD_URL"
+echo "找到下载URL: $DOWNLOAD_URL"
 
-# 下载包 - 使用curl跟随重定向
-echo "Downloading package..."
+# 下载包
+echo "下载包..."
 if curl -L -f -o "$PACKAGE_NAME" "$DOWNLOAD_URL"; then
-    echo "Download successful!"
-    echo "File size: $(stat -c%s "$PACKAGE_NAME") bytes"
+    echo "下载成功!"
+    echo "文件大小: $(stat -c%s "$PACKAGE_NAME") 字节"
 else
-    echo "ERROR: Download failed with curl"
-    echo "Trying with wget..."
+    echo "错误: curl下载失败"
+    echo "尝试使用wget..."
     if wget -O "$PACKAGE_NAME" "$DOWNLOAD_URL"; then
-        echo "Download successful with wget!"
+        echo "wget下载成功!"
     else
-        echo "ERROR: Both curl and wget failed"
+        echo "错误: curl和wget都失败了"
         exit 1
     fi
 fi
@@ -84,9 +92,15 @@ EOF
 
 FROM debian:stable-slim
 
+# 设置架构标签 - 非常重要！
+ARG TARGETARCH
+ARG TARGETVARIANT
+
 LABEL maintainer="shadowsocks-go-docker" \
       org.opencontainers.image.source="https://github.com/database64128/shadowsocks-go" \
-      org.opencontainers.image.description="Shadowsocks-go Docker image based on Debian"
+      org.opencontainers.image.description="Shadowsocks-go Docker image based on Debian" \
+      org.opencontainers.image.architecture="$TARGETARCH" \
+      org.opencontainers.image.variant="$TARGETVARIANT"
 
 # 安装最小运行时依赖
 RUN apt-get update && \
