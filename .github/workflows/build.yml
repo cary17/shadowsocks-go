@@ -6,10 +6,10 @@ on:
   workflow_dispatch:
     inputs:
       ss_go_version:
-        description: 'Shadowsocks-go版本 (如 v1.14.0)'
+        description: 'Shadowsocks-go版本 (如 v1.14.0)，留空则使用最新版本'
         required: false
         type: string
-        default: 'v1.14.0'
+        default: ''
       force:
         description: '强制构建'
         required: false
@@ -21,8 +21,69 @@ env:
   DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
 jobs:
+  check-existing:
+    name: Check Existing Version
+    runs-on: ubuntu-latest
+    outputs:
+      need_build: ${{ steps.check.outputs.need_build }}
+      remote_version: ${{ steps.check.outputs.remote_version }}
+    steps:
+      - name: 检查是否存在相同版本
+        id: check
+        run: |
+          /bin/bash << 'EOF'
+          # 获取输入的版本号
+          INPUT_VERSION="${{ inputs.ss_go_version }}"
+          
+          # 如果输入为空，从GitHub API获取最新版本
+          if [ -z "$INPUT_VERSION" ]; then
+            echo "输入版本为空，尝试获取最新版本..."
+            API_RESPONSE=$(curl -s https://api.github.com/repos/database64128/shadowsocks-go/releases/latest)
+            if echo "$API_RESPONSE" | grep -q "tag_name"; then
+              INPUT_VERSION=$(echo "$API_RESPONSE" | jq -r '.tag_name')
+              echo "从API获取到最新版本: $INPUT_VERSION"
+            else
+              echo "错误：无法从API获取最新版本"
+              exit 1
+            fi
+          fi
+          
+          # 确保版本号以v开头
+          if [[ ! "$INPUT_VERSION" =~ ^v ]]; then
+            INPUT_VERSION="v$INPUT_VERSION"
+            echo "标准化版本: $INPUT_VERSION"
+          fi
+          
+          echo "要构建的版本: $INPUT_VERSION"
+          echo "remote_version=$INPUT_VERSION" >> $GITHUB_OUTPUT
+          
+          # 检查GHCR是否已存在此版本
+          REPO_OWNER="${{ github.repository_owner }}"
+          REPO_NAME="shadowsocks-go"
+          IMAGE_TAG="${INPUT_VERSION}-debian-amd64v2"
+          
+          echo "检查GHCR镜像: ghcr.io/${REPO_OWNER}/${REPO_NAME}:${IMAGE_TAG}"
+          
+          # 使用docker manifest检查镜像是否存在
+          if docker manifest inspect "ghcr.io/${REPO_OWNER}/${REPO_NAME}:${IMAGE_TAG}" >/dev/null 2>&1; then
+            echo "镜像已存在于GHCR"
+            if [ "${{ inputs.force }}" = "true" ]; then
+              echo "强制构建模式，继续构建"
+              echo "need_build=true" >> $GITHUB_OUTPUT
+            else
+              echo "跳过构建（使用 force: true 强制构建）"
+              echo "need_build=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "镜像不存在于GHCR，需要构建"
+            echo "need_build=true" >> $GITHUB_OUTPUT
+          fi
+          EOF
+
   get-version:
     name: Get Version
+    needs: check-existing
+    if: ${{ needs.check-existing.outputs.need_build == 'true' }}
     runs-on: ubuntu-latest
     outputs:
       ss_go_version: ${{ steps.version.outputs.version }}
@@ -31,24 +92,12 @@ jobs:
         id: version
         run: |
           /bin/bash << 'EOF'
-          # 设置默认版本
-          DEFAULT_VERSION="v1.14.0"
+          # 使用从check job传递过来的版本号
+          VERSION="${{ needs.check-existing.outputs.remote_version }}"
           
-          # 如果有输入版本，使用输入版本
-          if [ -n "${{ inputs.ss_go_version }}" ] && [ "${{ inputs.ss_go_version }}" != "v1.14.0" ]; then
-            VERSION="${{ inputs.ss_go_version }}"
-            echo "使用输入版本: $VERSION"
-          else
-            echo "尝试获取最新版本..."
-            # 尝试从GitHub API获取最新版本
-            API_RESPONSE=$(curl -s https://api.github.com/repos/database64128/shadowsocks-go/releases/latest)
-            if echo "$API_RESPONSE" | grep -q "tag_name"; then
-              VERSION=$(echo "$API_RESPONSE" | jq -r '.tag_name')
-              echo "从API获取到版本: $VERSION"
-            else
-              VERSION="$DEFAULT_VERSION"
-              echo "API失败，使用默认版本: $VERSION"
-            fi
+          if [ -z "$VERSION" ]; then
+            echo "错误：版本号为空"
+            exit 1
           fi
           
           # 确保版本号以v开头
@@ -63,8 +112,8 @@ jobs:
 
   build-debian:
     name: Build Debian Images
-    needs: get-version
-    if: ${{ needs.get-version.outputs.ss_go_version != '' }}
+    needs: [check-existing, get-version]
+    if: ${{ needs.check-existing.outputs.need_build == 'true' && needs.get-version.outputs.ss_go_version != '' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -166,7 +215,7 @@ jobs:
   create-manifests:
     name: Create Multi-arch Manifests
     needs: build-debian
-    if: ${{ needs.get-version.outputs.ss_go_version != '' }}
+    if: ${{ needs.check-existing.outputs.need_build == 'true' && needs.get-version.outputs.ss_go_version != '' }}
     runs-on: ubuntu-latest
     permissions:
       packages: write
