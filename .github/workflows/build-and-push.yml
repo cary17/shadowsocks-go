@@ -6,13 +6,15 @@ on:
   workflow_dispatch:
     inputs:
       debian_version:
-        description: 'Debian version'
+        description: 'Debian version (e.g., stable-slim, bookworm-slim, bullseye-slim)'
         required: false
-        default: '13'
+        default: 'stable-slim'
+        type: string
       force_build:
         description: 'Force build even if version exists'
         required: false
         default: 'false'
+        type: string
       version:
         description: 'Shadowsocks-go version (e.g., v1.14.0, leave empty for latest)'
         required: false
@@ -191,7 +193,10 @@ jobs:
     strategy:
       matrix:
         base: [debian, alpine]
-        variant: [default, glibc]  # glibc 仅用于 debian，alpine 只有静态版本
+        variant: [default, glibc]
+        exclude:
+          - base: alpine
+            variant: glibc  # Alpine 不支持 glibc 变体
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -264,9 +269,14 @@ jobs:
           VERSION_SOURCE="${{ needs.check-version.outputs.version_source }}"
           BASE="${{ matrix.base }}"
           VARIANT="${{ matrix.variant }}"
+          DEBIAN_VERSION="${{ github.event.inputs.debian_version || 'stable-slim' }}"
           
           echo "Building version: $VERSION (source: $VERSION_SOURCE)"
           echo "Base: $BASE, Variant: $VARIANT"
+          if [ "$BASE" = "debian" ]; then
+            echo "Debian version: $DEBIAN_VERSION"
+            echo "debian_version=$DEBIAN_VERSION" >> $GITHUB_OUTPUT
+          fi
           
           # 设置平台
           PLATFORMS="linux/amd64,linux/arm64"
@@ -329,6 +339,7 @@ jobs:
           build-args: |
             VERSION=${{ needs.check-version.outputs.new_version }}
             VARIANT=${{ matrix.variant }}
+            ${{ matrix.base == 'debian' && format('DEBIAN_VERSION={0}', fromJSON(steps.prepare.outputs.debian_version) || 'stable-slim') || '' }}
           cache-from: type=gha,scope=${{ matrix.base }}-${{ matrix.variant }}
           cache-to: type=gha,mode=max,scope=${{ matrix.base }}-${{ matrix.variant }}
         continue-on-error: true
@@ -347,6 +358,7 @@ jobs:
           build-args: |
             VERSION=${{ needs.check-version.outputs.new_version }}
             VARIANT=${{ matrix.variant }}
+            ${{ matrix.base == 'debian' && format('DEBIAN_VERSION={0}', fromJSON(steps.prepare.outputs.debian_version) || 'stable-slim') || '' }}
           cache-from: type=gha,scope=${{ matrix.base }}-${{ matrix.variant }}
           cache-to: type=gha,mode=max,scope=${{ matrix.base }}-${{ matrix.variant }}
 
