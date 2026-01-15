@@ -60,7 +60,7 @@ jobs:
           # 检查GHCR是否已存在此版本
           REPO_OWNER="${{ github.repository_owner }}"
           REPO_NAME="shadowsocks-go"
-          IMAGE_TAG="${INPUT_VERSION}-debian-amd64v2"
+          IMAGE_TAG="${INPUT_VERSION}-amd64v2"
           
           echo "检查GHCR镜像: ghcr.io/${REPO_OWNER}/${REPO_NAME}:${IMAGE_TAG}"
           
@@ -124,17 +124,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: "Debian x86-64-v2"
+          - name: "x86-64-v2"
             arch: amd64
             variant: v2
             platform: linux/amd64
             suffix: amd64v2
-          - name: "Debian x86-64-v3"
+          - name: "x86-64-v3"
             arch: amd64
             variant: v3
             platform: linux/amd64
             suffix: amd64v3
-          - name: "Debian ARM64"
+          - name: "ARM64"
             arch: arm64
             variant: ""
             platform: linux/arm64
@@ -186,13 +186,14 @@ jobs:
           fi
           
           GHCR_REPO="ghcr.io/${{ github.repository_owner }}/$REPO_LOWER"
-          TAGS="${GHCR_REPO}:${VERSION}-debian-${{ matrix.suffix }}"
-          TAGS="${TAGS},${GHCR_REPO}:latest-debian-${{ matrix.suffix }}"
+          # 移除-debian后缀，直接使用架构后缀
+          TAGS="${GHCR_REPO}:${VERSION}-${{ matrix.suffix }}"
+          TAGS="${TAGS},${GHCR_REPO}:latest-${{ matrix.suffix }}"
           
           if [ -n "${{ env.DOCKERHUB_USERNAME }}" ]; then
             DOCKERHUB_REPO="${{ env.DOCKERHUB_USERNAME }}/$REPO_LOWER"
-            TAGS="${TAGS},${DOCKERHUB_REPO}:${VERSION}-debian-${{ matrix.suffix }}"
-            TAGS="${TAGS},${DOCKERHUB_REPO}:latest-debian-${{ matrix.suffix }}"
+            TAGS="${TAGS},${DOCKERHUB_REPO}:${VERSION}-${{ matrix.suffix }}"
+            TAGS="${TAGS},${DOCKERHUB_REPO}:latest-${{ matrix.suffix }}"
           fi
           
           echo "标签: $TAGS"
@@ -262,50 +263,30 @@ jobs:
           sleep 60
           
           echo "创建GHCR manifests..."
-          # 创建带v前缀的版本标签
-          docker buildx imagetools create -t "${GHCR_REPO}:${VERSION}-debian" \
-            "${GHCR_REPO}:${VERSION}-debian-amd64v2" \
-            "${GHCR_REPO}:${VERSION}-debian-amd64v3" \
-            "${GHCR_REPO}:${VERSION}-debian-arm64"
-          
+          # 移除-debian后缀
           docker buildx imagetools create -t "${GHCR_REPO}:${VERSION}" \
-            "${GHCR_REPO}:${VERSION}-debian-amd64v2" \
-            "${GHCR_REPO}:${VERSION}-debian-amd64v3" \
-            "${GHCR_REPO}:${VERSION}-debian-arm64"
-          
-          docker buildx imagetools create -t "${GHCR_REPO}:latest-debian" \
-            "${GHCR_REPO}:${VERSION}-debian-amd64v2" \
-            "${GHCR_REPO}:${VERSION}-debian-amd64v3" \
-            "${GHCR_REPO}:${VERSION}-debian-arm64"
+            "${GHCR_REPO}:${VERSION}-amd64v2" \
+            "${GHCR_REPO}:${VERSION}-amd64v3" \
+            "${GHCR_REPO}:${VERSION}-arm64"
           
           docker buildx imagetools create -t "${GHCR_REPO}:latest" \
-            "${GHCR_REPO}:${VERSION}-debian-amd64v2" \
-            "${GHCR_REPO}:${VERSION}-debian-amd64v3" \
-            "${GHCR_REPO}:${VERSION}-debian-arm64"
+            "${GHCR_REPO}:${VERSION}-amd64v2" \
+            "${GHCR_REPO}:${VERSION}-amd64v3" \
+            "${GHCR_REPO}:${VERSION}-arm64"
           
           if [ -n "${{ env.DOCKERHUB_USERNAME }}" ]; then
             DOCKERHUB_REPO="${{ env.DOCKERHUB_USERNAME }}/$REPO_LOWER"
             echo "为 $DOCKERHUB_REPO:$VERSION 创建多架构manifest"
             
-            docker buildx imagetools create -t "${DOCKERHUB_REPO}:${VERSION}-debian" \
-              "${DOCKERHUB_REPO}:${VERSION}-debian-amd64v2" \
-              "${DOCKERHUB_REPO}:${VERSION}-debian-amd64v3" \
-              "${DOCKERHUB_REPO}:${VERSION}-debian-arm64"
-            
             docker buildx imagetools create -t "${DOCKERHUB_REPO}:${VERSION}" \
-              "${DOCKERHUB_REPO}:${VERSION}-debian-amd64v2" \
-              "${DOCKERHUB_REPO}:${VERSION}-debian-amd64v3" \
-              "${DOCKERHUB_REPO}:${VERSION}-debian-arm64"
-            
-            docker buildx imagetools create -t "${DOCKERHUB_REPO}:latest-debian" \
-              "${DOCKERHUB_REPO}:${VERSION}-debian-amd64v2" \
-              "${DOCKERHUB_REPO}:${VERSION}-debian-amd64v3" \
-              "${DOCKERHUB_REPO}:${VERSION}-debian-arm64"
+              "${DOCKERHUB_REPO}:${VERSION}-amd64v2" \
+              "${DOCKERHUB_REPO}:${VERSION}-amd64v3" \
+              "${DOCKERHUB_REPO}:${VERSION}-arm64"
             
             docker buildx imagetools create -t "${DOCKERHUB_REPO}:latest" \
-              "${DOCKERHUB_REPO}:${VERSION}-debian-amd64v2" \
-              "${DOCKERHUB_REPO}:${VERSION}-debian-amd64v3" \
-              "${DOCKERHUB_REPO}:${VERSION}-debian-arm64"
+              "${DOCKERHUB_REPO}:${VERSION}-amd64v2" \
+              "${DOCKERHUB_REPO}:${VERSION}-amd64v3" \
+              "${DOCKERHUB_REPO}:${VERSION}-arm64"
           fi
           
           echo "Manifests创建完成"
