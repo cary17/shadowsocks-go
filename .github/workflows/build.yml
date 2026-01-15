@@ -129,16 +129,19 @@ jobs:
             variant: v2
             platform: linux/amd64
             suffix: amd64v2
+            docker_variant: v2
           - name: "x86-64-v3"
             arch: amd64
             variant: v3
             platform: linux/amd64
             suffix: amd64v3
+            docker_variant: v3
           - name: "ARM64"
             arch: arm64
             variant: ""
             platform: linux/arm64
             suffix: arm64
+            docker_variant: ""
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -148,12 +151,18 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            image=moby/buildkit:master
+          platforms: linux/amd64,linux/arm64
 
       - name: Debug Info
         run: |
           echo "版本号: ${{ needs.get-version.outputs.ss_go_version }}"
           echo "GitHub用户: ${{ github.repository_owner }}"
           echo "仓库名: $(basename ${{ github.repository }})"
+          echo "当前架构: ${{ matrix.arch }}"
+          echo "当前变体: ${{ matrix.docker_variant }}"
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
@@ -179,6 +188,7 @@ jobs:
           
           echo "版本号: $VERSION"
           echo "仓库名: $REPO_LOWER"
+          echo "架构变体: ${{ matrix.docker_variant }}"
           
           if [ -z "$VERSION" ]; then
             echo "错误: 版本号为空"
@@ -186,7 +196,6 @@ jobs:
           fi
           
           GHCR_REPO="ghcr.io/${{ github.repository_owner }}/$REPO_LOWER"
-          # 移除-debian后缀，直接使用架构后缀
           TAGS="${GHCR_REPO}:${VERSION}-${{ matrix.suffix }}"
           TAGS="${TAGS},${GHCR_REPO}:latest-${{ matrix.suffix }}"
           
@@ -211,9 +220,13 @@ jobs:
           tags: ${{ steps.tags.outputs.tags }}
           build-args: |
             SS_GO_VERSION=${{ needs.get-version.outputs.ss_go_version }}
-            TARGETVARIANT=${{ matrix.variant }}
+            TARGETARCH=${{ matrix.arch }}
+            TARGETVARIANT=${{ matrix.docker_variant }}
           provenance: false
           sbom: false
+          labels: |
+            org.opencontainers.image.architecture=${{ matrix.arch }}
+            org.opencontainers.image.variant=${{ matrix.docker_variant }}
 
   create-manifests:
     name: Create Multi-arch Manifests
@@ -257,37 +270,86 @@ jobs:
             exit 1
           fi
           
-          echo "为 $GHCR_REPO:$VERSION 创建多架构manifest"
           echo "等待镜像可用..."
+          sleep 30
           
-          sleep 60
+          echo "创建多架构 manifests..."
           
-          echo "创建GHCR manifests..."
-          # 移除-debian后缀
-          docker buildx imagetools create -t "${GHCR_REPO}:${VERSION}" \
-            "${GHCR_REPO}:${VERSION}-amd64v2" \
-            "${GHCR_REPO}:${VERSION}-amd64v3" \
-            "${GHCR_REPO}:${VERSION}-arm64"
+          # 为每个架构变体创建带变体信息的manifest
+          echo "创建带变体信息的 manifests..."
           
+          # 对于 latest 标签
           docker buildx imagetools create -t "${GHCR_REPO}:latest" \
             "${GHCR_REPO}:${VERSION}-amd64v2" \
             "${GHCR_REPO}:${VERSION}-amd64v3" \
             "${GHCR_REPO}:${VERSION}-arm64"
           
+          # 对于版本标签
+          docker buildx imagetools create -t "${GHCR_REPO}:${VERSION}" \
+            "${GHCR_REPO}:${VERSION}-amd64v2" \
+            "${GHCR_REPO}:${VERSION}-amd64v3" \
+            "${GHCR_REPO}:${VERSION}-arm64"
+          
+          # 验证 manifest
+          echo "验证 manifests..."
+          docker manifest inspect "${GHCR_REPO}:latest" | jq '.manifests[] | {architecture, variant, digest: .digest[:16]}'
+          
           if [ -n "${{ env.DOCKERHUB_USERNAME }}" ]; then
             DOCKERHUB_REPO="${{ env.DOCKERHUB_USERNAME }}/$REPO_LOWER"
-            echo "为 $DOCKERHUB_REPO:$VERSION 创建多架构manifest"
+            echo "为 $DOCKERHUB_REPO 创建多架构manifest"
             
-            docker buildx imagetools create -t "${DOCKERHUB_REPO}:${VERSION}" \
+            docker buildx imagetools create -t "${DOCKERHUB_REPO}:latest" \
               "${DOCKERHUB_REPO}:${VERSION}-amd64v2" \
               "${DOCKERHUB_REPO}:${VERSION}-amd64v3" \
               "${DOCKERHUB_REPO}:${VERSION}-arm64"
             
-            docker buildx imagetools create -t "${DOCKERHUB_REPO}:latest" \
+            docker buildx imagetools create -t "${DOCKERHUB_REPO}:${VERSION}" \
               "${DOCKERHUB_REPO}:${VERSION}-amd64v2" \
               "${DOCKERHUB_REPO}:${VERSION}-amd64v3" \
               "${DOCKERHUB_REPO}:${VERSION}-arm64"
           fi
           
           echo "Manifests创建完成"
+          EOF
+
+  verify-manifest:
+    name: Verify Manifest
+    needs: create-manifests
+    runs-on: ubuntu-latest
+    steps:
+      - name: 登录到 GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 验证 Manifest
+        run: |
+          /bin/bash << 'EOF'
+          VERSION="${{ needs.build-debian.outputs.ss_go_version }}"
+          REPO="ghcr.io/${{ github.repository_owner }}/shadowsocks-go"
+          
+          echo "=== 验证多架构 manifests ==="
+          echo ""
+          
+          echo "1. 验证 latest 标签:"
+          docker manifest inspect "${REPO}:latest" | jq '.manifests[] | {architecture, variant, os, digest: .digest[:16]}'
+          
+          echo ""
+          echo "2. 验证 ${VERSION} 标签:"
+          docker manifest inspect "${REPO}:${VERSION}" | jq '.manifests[] | {architecture, variant, os, digest: .digest[:16]}'
+          
+          echo ""
+          echo "3. 各架构镜像信息:"
+          for suffix in amd64v2 amd64v3 arm64; do
+            echo "=== ${VERSION}-${suffix} ==="
+            docker manifest inspect "${REPO}:${VERSION}-${suffix}" | jq '. | {schemaVersion, mediaType, architecture: .platform.architecture, variant: .platform.variant}'
+          done
+          
+          echo ""
+          echo "4. 架构分布总结:"
+          echo "   - amd64/v2: x86-64-v2 (支持 AVX)"
+          echo "   - amd64/v3: x86-64-v3 (支持 AVX2)"
+          echo "   - arm64:    ARM64"
           EOF
