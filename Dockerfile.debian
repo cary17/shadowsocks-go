@@ -2,7 +2,7 @@ FROM debian:stable-slim as builder
 
 ARG TARGETARCH
 ARG SS_GO_VERSION
-ARG TARGETVARIANT="v2"  # 默认使用 v2
+ARG TARGETVARIANT="v2"
 
 WORKDIR /tmp
 
@@ -11,21 +11,15 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends wget zstd ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
-# 根据架构和变体选择版本
+# 根据架构选择版本
 RUN ARCH_VARIANT="" && \
     if [ "$TARGETARCH" = "amd64" ]; then \
         if [ "$TARGETVARIANT" = "v3" ]; then \
             ARCH_VARIANT="x86-64-v3"; \
             echo "Using x86-64-v3 (explicitly requested)"; \
-        elif [ "$TARGETVARIANT" = "v2" ]; then \
-            ARCH_VARIANT="x86-64-v2"; \
-            echo "Using x86-64-v2 (explicitly requested)"; \
-        elif [ -f /proc/cpuinfo ] && grep -q avx2 /proc/cpuinfo 2>/dev/null && grep -q bmi2 /proc/cpuinfo 2>/dev/null; then \
-            ARCH_VARIANT="x86-64-v3"; \
-            echo "Using x86-64-v3 (CPU supports AVX2/BMI2)"; \
         else \
             ARCH_VARIANT="x86-64-v2"; \
-            echo "Using x86-64-v2 (default for compatibility)"; \
+            echo "Using x86-64-v2"; \
         fi; \
     elif [ "$TARGETARCH" = "arm64" ]; then \
         ARCH_VARIANT="arm64"; \
@@ -33,20 +27,28 @@ RUN ARCH_VARIANT="" && \
     else \
         echo "Unsupported architecture: $TARGETARCH" && exit 1; \
     fi && \
-    # 下载对应架构的包
-    PACKAGE_NAME="shadowsocks-go-${SS_GO_VERSION}-linux-${ARCH_VARIANT}.tar.zst" && \
-    echo "Downloading: $PACKAGE_NAME" && \
     # 尝试下载指定架构版本
-    if wget -q --spider "https://github.com/database64128/shadowsocks-go/releases/download/${SS_GO_VERSION}/${PACKAGE_NAME}" 2>/dev/null; then \
-        wget -q --show-progress "https://github.com/database64128/shadowsocks-go/releases/download/${SS_GO_VERSION}/${PACKAGE_NAME}" && \
-        echo "Downloaded specific architecture package"; \
+    PACKAGE_NAME="shadowsocks-go-${SS_GO_VERSION}-linux-${ARCH_VARIANT}.tar.zst" && \
+    echo "Downloading: https://github.com/database64128/shadowsocks-go/releases/download/${SS_GO_VERSION}/${PACKAGE_NAME}" && \
+    # 使用wget下载，如果失败尝试其他变体
+    if wget -q --show-progress "https://github.com/database64128/shadowsocks-go/releases/download/${SS_GO_VERSION}/${PACKAGE_NAME}"; then \
+        echo "Downloaded: ${PACKAGE_NAME}"; \
     else \
-        # 如果特定架构版本不存在，尝试通用版本
-        echo "Specific architecture package not found, trying generic version..." && \
-        GENERIC_NAME="shadowsocks-go-${SS_GO_VERSION}-linux-${TARGETARCH}.tar.zst" && \
-        wget -q --show-progress "https://github.com/database64128/shadowsocks-go/releases/download/${SS_GO_VERSION}/${GENERIC_NAME}" || \
-        (echo "Error: Failed to download package" && exit 1); \
-        PACKAGE_NAME="$GENERIC_NAME"; \
+        echo "Package ${PACKAGE_NAME} not found, trying alternative..."; \
+        # 尝试通用amd64版本
+        if [ "$ARCH_VARIANT" = "x86-64-v2" ] || [ "$ARCH_VARIANT" = "x86-64-v3" ]; then \
+            ALT_PACKAGE="shadowsocks-go-${SS_GO_VERSION}-linux-x86-64.tar.zst" && \
+            echo "Trying: ${ALT_PACKAGE}" && \
+            wget -q --show-progress "https://github.com/database64128/shadowsocks-go/releases/download/${SS_GO_VERSION}/${ALT_PACKAGE}" && \
+            PACKAGE_NAME="${ALT_PACKAGE}"; \
+        elif [ "$ARCH_VARIANT" = "arm64" ]; then \
+            ALT_PACKAGE="shadowsocks-go-${SS_GO_VERSION}-linux-aarch64.tar.zst" && \
+            echo "Trying: ${ALT_PACKAGE}" && \
+            wget -q --show-progress "https://github.com/database64128/shadowsocks-go/releases/download/${SS_GO_VERSION}/${ALT_PACKAGE}" && \
+            PACKAGE_NAME="${ALT_PACKAGE}"; \
+        else \
+            echo "Error: No suitable package found for architecture ${ARCH_VARIANT}" && exit 1; \
+        fi; \
     fi && \
     # 解压并清理
     tar -xf "$PACKAGE_NAME" && \
