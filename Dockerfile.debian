@@ -1,94 +1,61 @@
 # Dockerfile.debian
-ARG DEBIAN_VERSION=stable-slim
+# 构建阶段
+FROM debian:stable-slim AS builder
 
-FROM debian:${DEBIAN_VERSION} AS builder
-
-# 安装必要的工具
+# 安装下载工具
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    ca-certificates \
     wget \
     tar \
     zstd \
-    file \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # 构建参数
 ARG VERSION
-ARG TARGETARCH
-ARG TARGETVARIANT
-ARG VARIANT=default
+ARG ARCH
+ARG SS_VERSION
 
 WORKDIR /tmp
 
-# 检测函数：判断是否支持 v3
-RUN cat > /tmp/detect-cpu.sh << 'EOF' \
-    && chmod +x /tmp/detect-cpu.sh
-#!/bin/bash
-# 检测 CPU 是否支持 v3 所需指令集
-if grep -q "avx2" /proc/cpuinfo 2>/dev/null && \
-   grep -q "bmi1" /proc/cpuinfo 2>/dev/null && \
-   grep -q "bmi2" /proc/cpuinfo 2>/dev/null; then
-    echo "v3"
-else
-    echo "v2"
-fi
-EOF
-
-# 自动选择版本
+# 根据架构下载正确的包
 RUN set -e && \
-    # 确定架构和变体
-    case "${TARGETARCH}" in \
+    case "$ARCH" in \
         "amd64") \
-            # 检测应使用的版本（v2 或 v3）
-            if [ "$VARIANT" = "glibc" ]; then \
-                # 对于 glibc 变体，根据构建环境检测
-                SS_VERSION=$(/tmp/detect-cpu.sh); \
-            else \
-                # 对于静态版本，默认使用 v2 以保证兼容性
-                SS_VERSION="v2"; \
+            if [ -z "$SS_VERSION" ]; then \
+                echo "Error: SS_VERSION must be set for amd64" && exit 1; \
             fi; \
-            \
-            # 构建下载 URL
-            if [ "$VARIANT" = "glibc" ]; then \
-                URL="https://github.com/database64128/shadowsocks-go/releases/download/${VERSION}/shadowsocks-go-${VERSION}-linux-glibc-x86-64-${SS_VERSION}.tar.zst"; \
-            else \
-                URL="https://github.com/database64128/shadowsocks-go/releases/download/${VERSION}/shadowsocks-go-${VERSION}-linux-x86-64-${SS_VERSION}.tar.zst"; \
-            fi; \
+            URL="https://github.com/database64128/shadowsocks-go/releases/download/${VERSION}/shadowsocks-go-${VERSION}-linux-x86-64-${SS_VERSION}.tar.zst"; \
+            echo "Downloading x86_64 ${SS_VERSION} version from: $URL"; \
             ;; \
         "arm64") \
-            SS_VERSION=""; \
-            if [ "$VARIANT" = "glibc" ]; then \
-                URL="https://github.com/database64128/shadowsocks-go/releases/download/${VERSION}/shadowsocks-go-${VERSION}-linux-glibc-arm64.tar.zst"; \
-            else \
-                URL="https://github.com/database64128/shadowsocks-go/releases/download/${VERSION}/shadowsocks-go-${VERSION}-linux-arm64.tar.zst"; \
-            fi; \
+            URL="https://github.com/database64128/shadowsocks-go/releases/download/${VERSION}/shadowsocks-go-${VERSION}-linux-arm64.tar.zst"; \
+            echo "Downloading arm64 version from: $URL"; \
             ;; \
         *) \
-            echo "Unsupported architecture: ${TARGETARCH}" && exit 1; \
+            echo "Unsupported architecture: $ARCH" && exit 1; \
             ;; \
     esac && \
     \
-    echo "Downloading from: ${URL}" && \
-    wget -q -O shadowsocks.tar.zst "${URL}" && \
+    wget -q -O shadowsocks.tar.zst "$URL" && \
     tar -I zstd -xvf shadowsocks.tar.zst && \
-    mv shadowsocks-go /usr/local/bin/ && \
-    chmod +x /usr/local/bin/shadowsocks-go && \
-    rm -rf /tmp/*
+    chmod +x shadowsocks-go && \
+    rm -f shadowsocks.tar.zst shadowsocks-go-domain-set-converter
 
-# ========== 最终镜像 ==========
-FROM debian:${DEBIAN_VERSION}
+# 运行时阶段（最小化）
+FROM debian:stable-slim AS runtime
 
-# 安装 CA 证书
+# 安装最小依赖
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates && \
-    rm -rf /var/lib/apt/lists/* && \
+    apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/* && \
     mkdir -p /etc/ss-go
 
-# 复制二进制文件
-COPY --from=builder /usr/local/bin/shadowsocks-go /usr/local/bin/
+# 从构建阶段复制二进制文件
+COPY --from=builder /tmp/shadowsocks-go /usr/local/bin/
 
-# 复制入口脚本和配置生成脚本
+# 复制脚本
 COPY entrypoint.sh /usr/local/bin/
 COPY generate-config.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/generate-config.sh
@@ -104,6 +71,10 @@ ENV SS_MODE=server \
 
 # 工作目录
 WORKDIR /etc/ss-go
+
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD /usr/local/bin/shadowsocks-go -version >/dev/null 2>&1 || exit 1
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["shadowsocks-go", "-c", "/etc/ss-go/config.json"]
