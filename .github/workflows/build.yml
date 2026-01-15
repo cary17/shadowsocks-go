@@ -16,6 +16,9 @@ on:
     # 每小时整点运行（UTC时间）
     - cron: '0 * * * *'
 
+env:
+  DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+
 jobs:
   check-version:
     name: Check Latest Version
@@ -102,10 +105,23 @@ jobs:
           echo "should_build=$SHOULD_BUILD" >> $GITHUB_OUTPUT
 
   build-debian:
-    name: Build Debian Image
+    name: Build Debian Images
     needs: check-version
     if: needs.check-version.outputs.should_build == 'true'
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            variant: v2
+            platform: linux/amd64
+          - arch: amd64
+            variant: v3
+            platform: linux/amd64
+            cpu_flags: avx2,bmi2
+          - arch: arm64
+            variant: ""
+            platform: linux/arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -120,7 +136,7 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
+          username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Login to Docker Hub
@@ -138,36 +154,116 @@ jobs:
           REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
           DOCKERHUB_REPO="${{ secrets.DOCKERHUB_USERNAME }}/$(basename $REPO_LOWER)"
           
-          # 生成标签
-          TAGS="ghcr.io/${REPO_LOWER}:${VERSION_NO_V}-debian"
-          TAGS="${TAGS},ghcr.io/${REPO_LOWER}:${VERSION_NO_V}"
-          TAGS="${TAGS},ghcr.io/${REPO_LOWER}:latest-debian"
-          TAGS="${TAGS},ghcr.io/${REPO_LOWER}:latest"
-          TAGS="${TAGS},${DOCKERHUB_REPO}:${VERSION_NO_V}-debian"
-          TAGS="${TAGS},${DOCKERHUB_REPO}:${VERSION_NO_V}"
-          TAGS="${TAGS},${DOCKERHUB_REPO}:latest-debian"
-          TAGS="${TAGS},${DOCKERHUB_REPO}:latest"
+          # 为每个架构/变体生成特定标签
+          if [ "${{ matrix.variant }}" = "v3" ]; then
+            # v3 版本特定标签
+            TAGS="ghcr.io/${REPO_LOWER}:${VERSION_NO_V}-debian-x86-64-v3"
+            TAGS="${TAGS},ghcr.io/${REPO_LOWER}:latest-debian-x86-64-v3"
+            TAGS="${TAGS},${DOCKERHUB_REPO}:${VERSION_NO_V}-debian-x86-64-v3"
+            TAGS="${TAGS},${DOCKERHUB_REPO}:latest-debian-x86-64-v3"
+          elif [ "${{ matrix.variant }}" = "v2" ]; then
+            # v2 版本特定标签
+            TAGS="ghcr.io/${REPO_LOWER}:${VERSION_NO_V}-debian-x86-64-v2"
+            TAGS="${TAGS},ghcr.io/${REPO_LOWER}:latest-debian-x86-64-v2"
+            TAGS="${TAGS},${DOCKERHUB_REPO}:${VERSION_NO_V}-debian-x86-64-v2"
+            TAGS="${TAGS},${DOCKERHUB_REPO}:latest-debian-x86-64-v2"
+          elif [ "${{ matrix.arch }}" = "arm64" ]; then
+            # arm64 版本
+            TAGS="ghcr.io/${REPO_LOWER}:${VERSION_NO_V}-debian-arm64"
+            TAGS="${TAGS},ghcr.io/${REPO_LOWER}:latest-debian-arm64"
+            TAGS="${TAGS},${DOCKERHUB_REPO}:${VERSION_NO_V}-debian-arm64"
+            TAGS="${TAGS},${DOCKERHUB_REPO}:latest-debian-arm64"
+          fi
           
           echo "tags=${TAGS}" >> $GITHUB_OUTPUT
+          echo "variant_tag=$(echo ${{ matrix.variant }} | sed 's/^v//')" >> $GITHUB_OUTPUT
 
       - name: Build and Push
         uses: docker/build-push-action@v5
         with:
           context: .
           file: Dockerfile.debian
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ matrix.platform }}
           push: true
           tags: ${{ steps.tags.outputs.tags }}
           build-args: |
             SS_GO_VERSION=${{ needs.check-version.outputs.ss_go_version }}
-          cache-from: type=gha,scope=debian
-          cache-to: type=gha,mode=max,scope=debian
+            TARGETVARIANT=${{ matrix.variant }}
+          cache-from: type=gha,scope=debian-${{ matrix.arch }}-${{ matrix.variant }}
+          cache-to: type=gha,mode=max,scope=debian-${{ matrix.arch }}-${{ matrix.variant }}
+
+  create-debian-manifest:
+    name: Create Debian Manifest
+    needs: build-debian
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Create and Push Multi-arch Manifest for GHCR
+        run: |
+          VERSION="${{ needs.check-version.outputs.ss_go_version }}"
+          VERSION_NO_V="${VERSION#v}"
+          REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          
+          # 创建通用标签的 manifest（自动选择最佳版本）
+          docker buildx imagetools create \
+            -t ghcr.io/${REPO_LOWER}:${VERSION_NO_V}-debian \
+            -t ghcr.io/${REPO_LOWER}:${VERSION_NO_V} \
+            -t ghcr.io/${REPO_LOWER}:latest-debian \
+            -t ghcr.io/${REPO_LOWER}:latest \
+            ghcr.io/${REPO_LOWER}:${VERSION_NO_V}-debian-x86-64-v2 \
+            ghcr.io/${REPO_LOWER}:${VERSION_NO_V}-debian-x86-64-v3 \
+            ghcr.io/${REPO_LOWER}:${VERSION_NO_V}-debian-arm64
+
+      - name: Create and Push Multi-arch Manifest for Docker Hub
+        run: |
+          VERSION="${{ needs.check-version.outputs.ss_go_version }}"
+          VERSION_NO_V="${VERSION#v}"
+          REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          DOCKERHUB_REPO="${{ secrets.DOCKERHUB_USERNAME }}/$(basename $REPO_LOWER)"
+          
+          # 创建通用标签的 manifest（自动选择最佳版本）
+          docker buildx imagetools create \
+            -t ${DOCKERHUB_REPO}:${VERSION_NO_V}-debian \
+            -t ${DOCKERHUB_REPO}:${VERSION_NO_V} \
+            -t ${DOCKERHUB_REPO}:latest-debian \
+            -t ${DOCKERHUB_REPO}:latest \
+            ${DOCKERHUB_REPO}:${VERSION_NO_V}-debian-x86-64-v2 \
+            ${DOCKERHUB_REPO}:${VERSION_NO_V}-debian-x86-64-v3 \
+            ${DOCKERHUB_REPO}:${VERSION_NO_V}-debian-arm64
 
   build-alpine:
-    name: Build Alpine Image
+    name: Build Alpine Images
     needs: check-version
     if: needs.check-version.outputs.should_build == 'true'
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            variant: v2
+            platform: linux/amd64
+          - arch: amd64
+            variant: v3
+            platform: linux/amd64
+            cpu_flags: avx2,bmi2
+          - arch: arm64
+            variant: ""
+            platform: linux/arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -182,7 +278,7 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
+          username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Login to Docker Hub
@@ -200,23 +296,90 @@ jobs:
           REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
           DOCKERHUB_REPO="${{ secrets.DOCKERHUB_USERNAME }}/$(basename $REPO_LOWER)"
           
-          # 生成标签
-          TAGS="ghcr.io/${REPO_LOWER}:${VERSION_NO_V}-alpine"
-          TAGS="${TAGS},ghcr.io/${REPO_LOWER}:latest-alpine"
-          TAGS="${TAGS},${DOCKERHUB_REPO}:${VERSION_NO_V}-alpine"
-          TAGS="${TAGS},${DOCKERHUB_REPO}:latest-alpine"
+          # 为每个架构/变体生成特定标签
+          if [ "${{ matrix.variant }}" = "v3" ]; then
+            # v3 版本特定标签
+            TAGS="ghcr.io/${REPO_LOWER}:${VERSION_NO_V}-alpine-x86-64-v3"
+            TAGS="${TAGS},ghcr.io/${REPO_LOWER}:latest-alpine-x86-64-v3"
+            TAGS="${TAGS},${DOCKERHUB_REPO}:${VERSION_NO_V}-alpine-x86-64-v3"
+            TAGS="${TAGS},${DOCKERHUB_REPO}:latest-alpine-x86-64-v3"
+          elif [ "${{ matrix.variant }}" = "v2" ]; then
+            # v2 版本特定标签
+            TAGS="ghcr.io/${REPO_LOWER}:${VERSION_NO_V}-alpine-x86-64-v2"
+            TAGS="${TAGS},ghcr.io/${REPO_LOWER}:latest-alpine-x86-64-v2"
+            TAGS="${TAGS},${DOCKERHUB_REPO}:${VERSION_NO_V}-alpine-x86-64-v2"
+            TAGS="${TAGS},${DOCKERHUB_REPO}:latest-alpine-x86-64-v2"
+          elif [ "${{ matrix.arch }}" = "arm64" ]; then
+            # arm64 版本
+            TAGS="ghcr.io/${REPO_LOWER}:${VERSION_NO_V}-alpine-arm64"
+            TAGS="${TAGS},ghcr.io/${REPO_LOWER}:latest-alpine-arm64"
+            TAGS="${TAGS},${DOCKERHUB_REPO}:${VERSION_NO_V}-alpine-arm64"
+            TAGS="${TAGS},${DOCKERHUB_REPO}:latest-alpine-arm64"
+          fi
           
           echo "tags=${TAGS}" >> $GITHUB_OUTPUT
+          echo "variant_tag=$(echo ${{ matrix.variant }} | sed 's/^v//')" >> $GITHUB_OUTPUT
 
       - name: Build and Push
         uses: docker/build-push-action@v5
         with:
           context: .
           file: Dockerfile.alpine
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ matrix.platform }}
           push: true
           tags: ${{ steps.tags.outputs.tags }}
           build-args: |
             SS_GO_VERSION=${{ needs.check-version.outputs.ss_go_version }}
-          cache-from: type=gha,scope=alpine
-          cache-to: type=gha,mode=max,scope=alpine
+            TARGETVARIANT=${{ matrix.variant }}
+          cache-from: type=gha,scope=alpine-${{ matrix.arch }}-${{ matrix.variant }}
+          cache-to: type=gha,mode=max,scope=alpine-${{ matrix.arch }}-${{ matrix.variant }}
+
+  create-alpine-manifest:
+    name: Create Alpine Manifest
+    needs: build-alpine
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Create and Push Multi-arch Manifest for GHCR
+        run: |
+          VERSION="${{ needs.check-version.outputs.ss_go_version }}"
+          VERSION_NO_V="${VERSION#v}"
+          REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          
+          # 创建通用标签的 manifest
+          docker buildx imagetools create \
+            -t ghcr.io/${REPO_LOWER}:${VERSION_NO_V}-alpine \
+            -t ghcr.io/${REPO_LOWER}:latest-alpine \
+            ghcr.io/${REPO_LOWER}:${VERSION_NO_V}-alpine-x86-64-v2 \
+            ghcr.io/${REPO_LOWER}:${VERSION_NO_V}-alpine-x86-64-v3 \
+            ghcr.io/${REPO_LOWER}:${VERSION_NO_V}-alpine-arm64
+
+      - name: Create and Push Multi-arch Manifest for Docker Hub
+        run: |
+          VERSION="${{ needs.check-version.outputs.ss_go_version }}"
+          VERSION_NO_V="${VERSION#v}"
+          REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          DOCKERHUB_REPO="${{ secrets.DOCKERHUB_USERNAME }}/$(basename $REPO_LOWER)"
+          
+          # 创建通用标签的 manifest
+          docker buildx imagetools create \
+            -t ${DOCKERHUB_REPO}:${VERSION_NO_V}-alpine \
+            -t ${DOCKERHUB_REPO}:latest-alpine \
+            ${DOCKERHUB_REPO}:${VERSION_NO_V}-alpine-x86-64-v2 \
+            ${DOCKERHUB_REPO}:${VERSION_NO_V}-alpine-x86-64-v3 \
+            ${DOCKERHUB_REPO}:${VERSION_NO_V}-alpine-arm64
