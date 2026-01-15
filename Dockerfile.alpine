@@ -14,7 +14,7 @@ RUN ARCH_VARIANT="" && \
     if [ "$TARGETARCH" = "amd64" ]; then \
         if [ "$TARGETVARIANT" = "v3" ]; then \
             ARCH_VARIANT="x86-64-v3"; \
-            echo "Using x86-64-v3 (explicitly requested)"; \
+            echo "Using x86-64-v3"; \
         else \
             ARCH_VARIANT="x86-64-v2"; \
             echo "Using x86-64-v2"; \
@@ -25,28 +25,14 @@ RUN ARCH_VARIANT="" && \
     else \
         echo "Unsupported architecture: $TARGETARCH" && exit 1; \
     fi && \
-    # 尝试下载指定架构版本
+    # 下载对应架构的包
     PACKAGE_NAME="shadowsocks-go-${SS_GO_VERSION}-linux-${ARCH_VARIANT}.tar.zst" && \
     echo "Downloading: https://github.com/database64128/shadowsocks-go/releases/download/${SS_GO_VERSION}/${PACKAGE_NAME}" && \
-    # 使用wget下载，如果失败尝试其他变体
-    if wget -q --show-progress "https://github.com/database64128/shadowsocks-go/releases/download/${SS_GO_VERSION}/${PACKAGE_NAME}"; then \
-        echo "Downloaded: ${PACKAGE_NAME}"; \
-    else \
-        echo "Package ${PACKAGE_NAME} not found, trying alternative..."; \
-        # 尝试通用amd64版本
-        if [ "$ARCH_VARIANT" = "x86-64-v2" ] || [ "$ARCH_VARIANT" = "x86-64-v3" ]; then \
-            ALT_PACKAGE="shadowsocks-go-${SS_GO_VERSION}-linux-x86-64.tar.zst" && \
-            echo "Trying: ${ALT_PACKAGE}" && \
-            wget -q --show-progress "https://github.com/database64128/shadowsocks-go/releases/download/${SS_GO_VERSION}/${ALT_PACKAGE}" && \
-            PACKAGE_NAME="${ALT_PACKAGE}"; \
-        elif [ "$ARCH_VARIANT" = "arm64" ]; then \
-            ALT_PACKAGE="shadowsocks-go-${SS_GO_VERSION}-linux-aarch64.tar.zst" && \
-            echo "Trying: ${ALT_PACKAGE}" && \
-            wget -q --show-progress "https://github.com/database64128/shadowsocks-go/releases/download/${SS_GO_VERSION}/${ALT_PACKAGE}" && \
-            PACKAGE_NAME="${ALT_PACKAGE}"; \
-        else \
-            echo "Error: No suitable package found for architecture ${ARCH_VARIANT}" && exit 1; \
-        fi; \
+    # 尝试下载，如果失败则退出
+    if ! wget -q --show-progress "https://github.com/database64128/shadowsocks-go/releases/download/${SS_GO_VERSION}/${PACKAGE_NAME}"; then \
+        echo "Error: Failed to download package ${PACKAGE_NAME}" && \
+        echo "Please check if the package exists at: https://github.com/database64128/shadowsocks-go/releases/tag/${SS_GO_VERSION}" && \
+        exit 1; \
     fi && \
     # 解压并清理
     tar -xf "$PACKAGE_NAME" && \
