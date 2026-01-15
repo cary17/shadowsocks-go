@@ -10,30 +10,45 @@ if ! command -v shadowsocks-go >/dev/null 2>&1; then
     exit 1
 fi
 
+# 生成 upsks.json 如果存在 UPSK 环境变量
+generate_upsks_json() {
+    local first=true
+    
+    # 收集所有 SS_UPSK_* 环境变量
+    for var in $(env | grep '^SS_UPSK_' | sort); do
+        username=$(echo "$var" | cut -d= -f1 | sed 's/^SS_UPSK_//')
+        psk=$(echo "$var" | cut -d= -f2)
+        
+        if [ "$first" = "true" ]; then
+            echo "{" > /etc/ss-go/upsks.json
+            echo "    \"$username\": \"$psk\"" >> /etc/ss-go/upsks.json
+            first=false
+        else
+            echo "    ,\"$username\": \"$psk\"" >> /etc/ss-go/upsks.json
+        fi
+    done
+    
+    if [ "$first" = "false" ]; then
+        echo "}" >> /etc/ss-go/upsks.json
+        echo "Generated upsks.json from environment variables"
+        
+        # 显示生成的用户
+        echo "UPSK Users:"
+        for var in $(env | grep '^SS_UPSK_' | sort); do
+            username=$(echo "$var" | cut -d= -f1 | sed 's/^SS_UPSK_//')
+            echo "  - $username"
+        done
+    fi
+}
+
 # 如果没有配置文件，生成一个
 if [ ! -f /etc/ss-go/config.json ] && [ "$1" = "-c" ] && [ "$2" = "/etc/ss-go/config.json" ]; then
     echo "No configuration file found, generating from environment variables..."
     /usr/local/bin/generate-config.sh
 fi
 
-# 如果有 UPSK 环境变量，生成 upsks.json
-if [ -n "$SS_UPSK_STEVE" ] || [ -n "$SS_UPSK_ALEX" ]; then
-    cat > /etc/ss-go/upsks.json << EOF
-{
-EOF
-    if [ -n "$SS_UPSK_STEVE" ]; then
-        echo "    \"Steve\": \"$SS_UPSK_STEVE\"," >> /etc/ss-go/upsks.json
-    fi
-    if [ -n "$SS_UPSK_ALEX" ]; then
-        if [ -n "$SS_UPSK_STEVE" ]; then
-            echo "    \"Alex\": \"$SS_UPSK_ALEX\"" >> /etc/ss-go/upsks.json
-        else
-            echo "    \"Alex\": \"$SS_UPSK_ALEX\"" >> /etc/ss-go/upsks.json
-        fi
-    fi
-    echo "}" >> /etc/ss-go/upsks.json
-    echo "Generated upsks.json from environment variables"
-fi
+# 生成 upsks.json
+generate_upsks_json
 
 echo "Starting shadowsocks-go..."
 
