@@ -8,7 +8,7 @@ WORKDIR /tmp
 
 # 安装必要工具
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends wget curl zstd ca-certificates && \
+    apt-get install -y --no-install-recommends wget curl zstd ca-certificates jq && \
     rm -rf /var/lib/apt/lists/*
 
 # 根据架构选择版本
@@ -29,58 +29,43 @@ RUN ARCH_VARIANT="" && \
     fi && \
     echo "Selected architecture: $ARCH_VARIANT" && \
     echo "Version: $SS_GO_VERSION" && \
-    # 尝试多种包名格式
-    VERSION_NO_V="${SS_GO_VERSION#v}" && \
-    echo "Version without v: $VERSION_NO_V" && \
-    # 格式1: shadowsocks-go-v1.11.0-linux-x86-64-v2.tar.zst
-    PACKAGE_NAME_1="shadowsocks-go-${SS_GO_VERSION}-linux-${ARCH_VARIANT}.tar.zst" && \
-    URL1="https://github.com/database64128/shadowsocks-go/releases/download/${SS_GO_VERSION}/${PACKAGE_NAME_1}" && \
-    # 格式2: shadowsocks-go-1.11.0-linux-x86-64-v2.tar.zst (不带v)
-    PACKAGE_NAME_2="shadowsocks-go-${VERSION_NO_V}-linux-${ARCH_VARIANT}.tar.zst" && \
-    URL2="https://github.com/database64128/shadowsocks-go/releases/download/${SS_GO_VERSION}/${PACKAGE_NAME_2}" && \
-    # 格式3: 尝试不同的架构名
-    if [ "$ARCH_VARIANT" = "arm64" ]; then \
-        ALT_ARCH="aarch64"; \
-        PACKAGE_NAME_3="shadowsocks-go-${SS_GO_VERSION}-linux-${ALT_ARCH}.tar.zst"; \
-    elif [ "$ARCH_VARIANT" = "x86-64-v2" ]; then \
-        ALT_ARCH="amd64-v2"; \
-        PACKAGE_NAME_3="shadowsocks-go-${SS_GO_VERSION}-linux-${ALT_ARCH}.tar.zst"; \
-    elif [ "$ARCH_VARIANT" = "x86-64-v3" ]; then \
-        ALT_ARCH="amd64-v3"; \
-        PACKAGE_NAME_3="shadowsocks-go-${SS_GO_VERSION}-linux-${ALT_ARCH}.tar.zst"; \
-    else \
-        PACKAGE_NAME_3=""; \
-    fi && \
-    URL3="https://github.com/database64128/shadowsocks-go/releases/download/${SS_GO_VERSION}/${PACKAGE_NAME_3}" && \
-    echo "Trying URL1: $URL1" && \
-    echo "Trying URL2: $URL2" && \
-    if [ -n "$PACKAGE_NAME_3" ]; then echo "Trying URL3: $URL3"; fi && \
-    # 尝试下载
-    SUCCESS=false && \
-    for i in 1 2 3; do \
-        eval "URL=\$URL$i" && \
-        eval "PACKAGE_NAME=\$PACKAGE_NAME_$i" && \
-        if [ -n "$URL" ] && [ -n "$PACKAGE_NAME" ]; then \
-            echo "Attempt $i: Downloading $PACKAGE_NAME..." && \
-            if curl -L -f -o "$PACKAGE_NAME" "$URL"; then \
-                echo "Success! Downloaded using URL$i" && \
-                SUCCESS=true && \
-                break; \
-            else \
-                echo "Failed with URL$i" && \
-                rm -f "$PACKAGE_NAME" 2>/dev/null; \
-            fi; \
-        fi; \
-    done && \
-    if [ "$SUCCESS" = "false" ]; then \
-        echo "ERROR: All download attempts failed!" && \
-        echo "Testing what's available..." && \
-        curl -s "https://api.github.com/repos/database64128/shadowsocks-go/releases" | \
-          jq -r --arg version "$SS_GO_VERSION" '.[] | select(.tag_name == $version) | .assets[].name' | head -20 && \
+    # 包名格式：shadowsocks-go-v1.14.0-linux-x86-64-v3.tar.zst
+    PACKAGE_NAME="shadowsocks-go-${SS_GO_VERSION}-linux-${ARCH_VARIANT}.tar.zst" && \
+    echo "Package name: $PACKAGE_NAME" && \
+    # 使用GitHub API获取真实的下载URL
+    echo "Fetching download URL from GitHub API..." && \
+    API_URL="https://api.github.com/repos/database64128/shadowsocks-go/releases/tags/${SS_GO_VERSION}" && \
+    echo "API URL: $API_URL" && \
+    # 从GitHub API获取asset信息
+    ASSET_INFO=$(curl -s -H "Accept: application/vnd.github.v3+json" "$API_URL") && \
+    if [ -z "$ASSET_INFO" ]; then \
+        echo "ERROR: Failed to fetch release info"; \
         exit 1; \
     fi && \
-    echo "Download successful: $PACKAGE_NAME" && \
-    echo "File size: $(stat -c%s "$PACKAGE_NAME") bytes" && \
+    # 查找匹配的asset
+    DOWNLOAD_URL=$(echo "$ASSET_INFO" | jq -r --arg name "$PACKAGE_NAME" '.assets[] | select(.name == $name) | .browser_download_url') && \
+    if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then \
+        echo "ERROR: Package $PACKAGE_NAME not found in release $SS_GO_VERSION" && \
+        echo "Available packages:" && \
+        echo "$ASSET_INFO" | jq -r '.assets[].name' && \
+        exit 1; \
+    fi && \
+    echo "Found download URL: $DOWNLOAD_URL" && \
+    # 下载包 - 使用curl跟随重定向
+    echo "Downloading package..." && \
+    if curl -L -f -o "$PACKAGE_NAME" "$DOWNLOAD_URL"; then \
+        echo "Download successful!" && \
+        echo "File size: $(stat -c%s "$PACKAGE_NAME") bytes"; \
+    else \
+        echo "ERROR: Download failed with curl" && \
+        echo "Trying with wget..." && \
+        if wget -O "$PACKAGE_NAME" "$DOWNLOAD_URL"; then \
+            echo "Download successful with wget!"; \
+        else \
+            echo "ERROR: Both curl and wget failed"; \
+            exit 1; \
+        fi; \
+    fi && \
     # 解压并清理
     tar -xf "$PACKAGE_NAME" && \
     chmod +x shadowsocks-go && \
