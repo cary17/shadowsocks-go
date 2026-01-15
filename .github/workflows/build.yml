@@ -15,6 +15,10 @@ on:
         type: boolean
         default: false
 
+env:
+  DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+  DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+
 jobs:
   check-version:
     name: Check Latest Version
@@ -35,7 +39,6 @@ jobs:
             echo "最新版本: $VERSION"
           fi
           
-          # 确保版本号以v开头
           if [[ ! "$VERSION" =~ ^v ]]; then
             VERSION="v$VERSION"
             echo "标准化版本: $VERSION"
@@ -89,9 +92,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-    env:
-      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
     strategy:
       fail-fast: false
       matrix:
@@ -121,12 +121,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Debug Info
-        run: |
-          echo "GitHub用户名: ${{ github.repository_owner }}"
-          echo "Docker Hub用户名: ${{ env.DOCKERHUB_USERNAME }}"
-          echo "构建版本: ${{ needs.check-version.outputs.ss_go_version }}"
-
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -148,14 +142,12 @@ jobs:
           REPO_NAME=$(basename "${{ github.repository }}")
           REPO_LOWER=$(echo "$REPO_NAME" | tr '[:upper:]' '[:lower:]')
           
-          # GHCR 标签
-          GHCR_REPO="ghcr.io/${{ github.repository_owner }}/${REPO_LOWER}"
+          GHCR_REPO="ghcr.io/${{ github.repository_owner }}/$REPO_LOWER"
           TAGS="${GHCR_REPO}:${VERSION}-debian-${{ matrix.suffix }}"
           TAGS="${TAGS},${GHCR_REPO}:latest-debian-${{ matrix.suffix }}"
           
-          # Docker Hub 标签（如果有凭证）
           if [ -n "${{ env.DOCKERHUB_USERNAME }}" ]; then
-            DOCKERHUB_REPO="${{ env.DOCKERHUB_USERNAME }}/${REPO_LOWER}"
+            DOCKERHUB_REPO="${{ env.DOCKERHUB_USERNAME }}/$REPO_LOWER"
             TAGS="${TAGS},${DOCKERHUB_REPO}:${VERSION}-debian-${{ matrix.suffix }}"
             TAGS="${TAGS},${DOCKERHUB_REPO}:latest-debian-${{ matrix.suffix }}"
           fi
@@ -203,19 +195,18 @@ jobs:
 
       - name: Create Manifests
         run: |
+          /bin/bash << 'EOF'
           VERSION="${{ needs.check-version.outputs.ss_go_version }}"
           REPO_NAME=$(basename "${{ github.repository }}")
-          REPO_LOWER=$(echo "$REPO_NAME" | tr '[:upper:]' '[:lower:]")
+          REPO_LOWER=$(echo "$REPO_NAME" | tr '[:upper:]' '[:lower:]')
+          GHCR_REPO="ghcr.io/${{ github.repository_owner }}/$REPO_LOWER"
           
-          GHCR_REPO="ghcr.io/${{ github.repository_owner }}/${REPO_LOWER}"
+          echo "Creating manifests for $GHCR_REPO:$VERSION"
+          echo "Waiting for images to be available..."
           
-          echo "为 $GHCR_REPO:$VERSION 创建多架构manifest"
-          echo "等待镜像可用..."
-          
-          # 等待镜像推送完成
           sleep 60
           
-          # GHCR manifests
+          echo "Creating GHCR manifests..."
           docker buildx imagetools create -t ${GHCR_REPO}:${VERSION}-debian \
             ${GHCR_REPO}:${VERSION}-debian-amd64v2 \
             ${GHCR_REPO}:${VERSION}-debian-amd64v3 \
@@ -236,10 +227,9 @@ jobs:
             ${GHCR_REPO}:${VERSION}-debian-amd64v3 \
             ${GHCR_REPO}:${VERSION}-debian-arm64
           
-          # Docker Hub manifests (如果有凭证)
           if [ -n "${{ env.DOCKERHUB_USERNAME }}" ]; then
-            DOCKERHUB_REPO="${{ env.DOCKERHUB_USERNAME }}/${REPO_LOWER}"
-            echo "为 $DOCKERHUB_REPO:$VERSION 创建多架构manifest"
+            DOCKERHUB_REPO="${{ env.DOCKERHUB_USERNAME }}/$REPO_LOWER"
+            echo "Creating Docker Hub manifests for $DOCKERHUB_REPO:$VERSION"
             
             docker buildx imagetools create -t ${DOCKERHUB_REPO}:${VERSION}-debian \
               ${DOCKERHUB_REPO}:${VERSION}-debian-amd64v2 \
@@ -261,3 +251,4 @@ jobs:
               ${DOCKERHUB_REPO}:${VERSION}-debian-amd64v3 \
               ${DOCKERHUB_REPO}:${VERSION}-debian-arm64
           fi
+          EOF
