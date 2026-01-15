@@ -128,6 +128,36 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Prepare Tags
+        id: tags
+        run: |
+          VERSION="${{ needs.check-version.outputs.ss_go_version }}"
+          VERSION_NO_V="${VERSION#v}"
+          REPO_NAME=$(basename "${{ github.repository }}")
+          REPO_LOWER=$(echo "$REPO_NAME" | tr '[:upper:]' '[:lower:]")
+          
+          # 根据变体生成标签后缀
+          if [ "${{ matrix.variant }}" = "v2" ]; then
+            VARIANT_SUFFIX="-amd64v2"
+          elif [ "${{ matrix.variant }}" = "v3" ]; then
+            VARIANT_SUFFIX="-amd64v3"
+          else
+            VARIANT_SUFFIX="-arm64"
+          fi
+          
+          GHCR_REPO="ghcr.io/${{ github.repository_owner }}/${REPO_LOWER}"
+          DOCKERHUB_REPO="${{ secrets.DOCKERHUB_USERNAME }}/${REPO_LOWER}"
+          
+          # 生成标签
+          TAGS="${GHCR_REPO}:${VERSION_NO_V}-debian${VARIANT_SUFFIX}"
+          TAGS="${TAGS},${GHCR_REPO}:latest-debian${VARIANT_SUFFIX}"
+          TAGS="${TAGS},${DOCKERHUB_REPO}:${VERSION_NO_V}-debian${VARIANT_SUFFIX}"
+          TAGS="${TAGS},${DOCKERHUB_REPO}:latest-debian${VARIANT_SUFFIX}"
+          
+          echo "tags=${TAGS}" >> $GITHUB_OUTPUT
+          echo "ghcr_repo=${GHCR_REPO}" >> $GITHUB_OUTPUT
+          echo "dockerhub_repo=${DOCKERHUB_REPO}" >> $GITHUB_OUTPUT
+
       - name: Build and Push
         uses: docker/build-push-action@v5
         with:
@@ -135,11 +165,7 @@ jobs:
           file: Dockerfile.debian
           platforms: ${{ matrix.platform }}
           push: true
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/$(basename ${{ github.repository }}):${{ needs.check-version.outputs.ss_go_version }}-debian-${{ matrix.arch }}${{ matrix.variant }}
-            ghcr.io/${{ github.repository_owner }}/$(basename ${{ github.repository }}):latest-debian-${{ matrix.arch }}${{ matrix.variant }}
-            ${{ secrets.DOCKERHUB_USERNAME }}/$(basename ${{ github.repository }}):${{ needs.check-version.outputs.ss_go_version }}-debian-${{ matrix.arch }}${{ matrix.variant }}
-            ${{ secrets.DOCKERHUB_USERNAME }}/$(basename ${{ github.repository }}):latest-debian-${{ matrix.arch }}${{ matrix.variant }}
+          tags: ${{ steps.tags.outputs.tags }}
           build-args: |
             SS_GO_VERSION=${{ needs.check-version.outputs.ss_go_version }}
             TARGETVARIANT=${{ matrix.variant }}
@@ -187,6 +213,36 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Prepare Tags
+        id: tags
+        run: |
+          VERSION="${{ needs.check-version.outputs.ss_go_version }}"
+          VERSION_NO_V="${VERSION#v}"
+          REPO_NAME=$(basename "${{ github.repository }}")
+          REPO_LOWER=$(echo "$REPO_NAME" | tr '[:upper:]' '[:lower:]")
+          
+          # 根据变体生成标签后缀
+          if [ "${{ matrix.variant }}" = "v2" ]; then
+            VARIANT_SUFFIX="-amd64v2"
+          elif [ "${{ matrix.variant }}" = "v3" ]; then
+            VARIANT_SUFFIX="-amd64v3"
+          else
+            VARIANT_SUFFIX="-arm64"
+          fi
+          
+          GHCR_REPO="ghcr.io/${{ github.repository_owner }}/${REPO_LOWER}"
+          DOCKERHUB_REPO="${{ secrets.DOCKERHUB_USERNAME }}/${REPO_LOWER}"
+          
+          # 生成标签
+          TAGS="${GHCR_REPO}:${VERSION_NO_V}-alpine${VARIANT_SUFFIX}"
+          TAGS="${TAGS},${GHCR_REPO}:latest-alpine${VARIANT_SUFFIX}"
+          TAGS="${TAGS},${DOCKERHUB_REPO}:${VERSION_NO_V}-alpine${VARIANT_SUFFIX}"
+          TAGS="${TAGS},${DOCKERHUB_REPO}:latest-alpine${VARIANT_SUFFIX}"
+          
+          echo "tags=${TAGS}" >> $GITHUB_OUTPUT
+          echo "ghcr_repo=${GHCR_REPO}" >> $GITHUB_OUTPUT
+          echo "dockerhub_repo=${DOCKERHUB_REPO}" >> $GITHUB_OUTPUT
+
       - name: Build and Push
         uses: docker/build-push-action@v5
         with:
@@ -194,11 +250,7 @@ jobs:
           file: Dockerfile.alpine
           platforms: ${{ matrix.platform }}
           push: true
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/$(basename ${{ github.repository }}):${{ needs.check-version.outputs.ss_go_version }}-alpine-${{ matrix.arch }}${{ matrix.variant }}
-            ghcr.io/${{ github.repository_owner }}/$(basename ${{ github.repository }}):latest-alpine-${{ matrix.arch }}${{ matrix.variant }}
-            ${{ secrets.DOCKERHUB_USERNAME }}/$(basename ${{ github.repository }}):${{ needs.check-version.outputs.ss_go_version }}-alpine-${{ matrix.arch }}${{ matrix.variant }}
-            ${{ secrets.DOCKERHUB_USERNAME }}/$(basename ${{ github.repository }}):latest-alpine-${{ matrix.arch }}${{ matrix.variant }}
+          tags: ${{ steps.tags.outputs.tags }}
           build-args: |
             SS_GO_VERSION=${{ needs.check-version.outputs.ss_go_version }}
             TARGETVARIANT=${{ matrix.variant }}
@@ -226,15 +278,27 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Prepare Repo Info
+        id: repo_info
+        run: |
+          REPO_NAME=$(basename "${{ github.repository }}")
+          REPO_LOWER=$(echo "$REPO_NAME" | tr '[:upper:]' '[:lower:]")
+          GHCR_REPO="ghcr.io/${{ github.repository_owner }}/${REPO_LOWER}"
+          DOCKERHUB_REPO="${{ secrets.DOCKERHUB_USERNAME }}/${REPO_LOWER}"
+          
+          echo "ghcr_repo=${GHCR_REPO}" >> $GITHUB_OUTPUT
+          echo "dockerhub_repo=${DOCKERHUB_REPO}" >> $GITHUB_OUTPUT
+
       - name: Create Debian Manifests
         run: |
           VERSION="${{ needs.check-version.outputs.ss_go_version }}"
           VERSION_NO_V="${VERSION#v}"
-          REPO_NAME=$(basename "${{ github.repository }}")
-          GHCR_REPO="ghcr.io/${{ github.repository_owner }}/${REPO_NAME}"
-          DOCKERHUB_REPO="${{ secrets.DOCKERHUB_USERNAME }}/${REPO_NAME}"
+          GHCR_REPO="${{ steps.repo_info.outputs.ghcr_repo }}"
+          DOCKERHUB_REPO="${{ steps.repo_info.outputs.dockerhub_repo }}"
           
           echo "Creating Debian multi-arch manifests..."
+          echo "GHCR Repo: $GHCR_REPO"
+          echo "Docker Hub Repo: $DOCKERHUB_REPO"
           
           # GHCR Debian manifests
           docker buildx imagetools create -t ${GHCR_REPO}:${VERSION_NO_V}-debian \
@@ -282,9 +346,8 @@ jobs:
         run: |
           VERSION="${{ needs.check-version.outputs.ss_go_version }}"
           VERSION_NO_V="${VERSION#v}"
-          REPO_NAME=$(basename "${{ github.repository }}")
-          GHCR_REPO="ghcr.io/${{ github.repository_owner }}/${REPO_NAME}"
-          DOCKERHUB_REPO="${{ secrets.DOCKERHUB_USERNAME }}/${REPO_NAME}"
+          GHCR_REPO="${{ steps.repo_info.outputs.ghcr_repo }}"
+          DOCKERHUB_REPO="${{ steps.repo_info.outputs.dockerhub_repo }}"
           
           echo "Creating Alpine multi-arch manifests..."
           
