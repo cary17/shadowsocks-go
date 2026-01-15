@@ -1,111 +1,263 @@
-FROM debian:stable-slim AS builder
+name: Build Docker Images
 
-ARG TARGETARCH
-ARG SS_GO_VERSION
-ARG TARGETVARIANT="v2"
+on:
+  schedule:
+    - cron: '0 * * * *'
+  workflow_dispatch:
+    inputs:
+      ss_go_version:
+        description: 'Shadowsocks-go版本 (如 v1.14.0, 留空自动获取)'
+        required: false
+        type: string
+      force:
+        description: '强制构建'
+        required: false
+        type: boolean
+        default: false
 
-WORKDIR /tmp
+jobs:
+  check-version:
+    name: Check Latest Version
+    runs-on: ubuntu-latest
+    outputs:
+      ss_go_version: ${{ steps.get_version.outputs.version }}
+      should_build: ${{ steps.decide.outputs.should_build }}
+    steps:
+      - name: 获取最新版本
+        id: get_version
+        run: |
+          if [ -n "${{ inputs.ss_go_version }}" ]; then
+            VERSION="${{ inputs.ss_go_version }}"
+            echo "使用指定版本: $VERSION"
+          else
+            echo "获取最新发布..."
+            VERSION=$(curl -s https://api.github.com/repos/database64128/shadowsocks-go/releases/latest | jq -r '.tag_name')
+            echo "最新版本: $VERSION"
+          fi
+          
+          # 确保版本号以v开头
+          if [[ ! "$VERSION" =~ ^v ]]; then
+            VERSION="v$VERSION"
+            echo "标准化版本: $VERSION"
+          fi
+          
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "最终版本: $VERSION"
 
-# 安装必要工具
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends wget curl zstd ca-certificates jq && \
-    rm -rf /var/lib/apt/lists/*
+      - name: 获取 GHCR 现有版本
+        id: ghcr
+        run: |
+          TOKEN=$(curl -fsSL "https://ghcr.io/token?scope=repository:${{ github.repository_owner }}/shadowsocks-go:pull" | jq -r '.token // empty')
+          GHCR_V="v0.0.0"
+          if [ -n "$TOKEN" ]; then
+            GHCR_V=$(curl -fsSL -H "Authorization: Bearer $TOKEN" \
+              https://ghcr.io/v2/${{ github.repository_owner }}/shadowsocks-go/tags/list \
+              | jq -r '.tags[]?' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1 || echo "v0.0.0")
+          fi
+          echo "ghcr_version=$GHCR_V" >> $GITHUB_OUTPUT
 
-# 根据架构选择版本 - 使用heredoc避免单引号问题
-RUN /bin/bash << 'EOF'
-ARCH_VARIANT=""
-if [ "$TARGETARCH" = "amd64" ]; then
-    if [ "$TARGETVARIANT" = "v3" ]; then
-        ARCH_VARIANT="x86-64-v3"
-        echo "Using x86-64-v3"
-    else
-        ARCH_VARIANT="x86-64-v2"
-        echo "Using x86-64-v2"
-    fi
-elif [ "$TARGETARCH" = "arm64" ]; then
-    ARCH_VARIANT="arm64"
-    echo "Using arm64"
-else
-    echo "Unsupported architecture: $TARGETARCH"
-    exit 1
-fi
+      - name: 版本比对与决策
+        id: decide
+        run: |
+          OFFICIAL="${{ steps.get_version.outputs.version }}"
+          CURRENT="${{ steps.ghcr.outputs.ghcr_version }}"
+          echo "官方版本: $OFFICIAL"
+          echo "GHCR版本: $CURRENT"
+          
+          if [ "${{ github.event.inputs.force }}" = "true" ]; then
+            echo "强制构建启用"
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          elif [ "$OFFICIAL" != "$CURRENT" ]; then
+            HIGHEST=$(printf '%s\n%s' "$OFFICIAL" "$CURRENT" | sort -V | tail -n1)
+            if [ "$HIGHEST" == "$OFFICIAL" ]; then
+              echo "官方版本更高，需要构建"
+              echo "should_build=true" >> $GITHUB_OUTPUT
+            else
+              echo "GHCR版本更高，不需要构建"
+              echo "should_build=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "版本相同，不需要构建"
+            echo "should_build=false" >> $GITHUB_OUTPUT
+          fi
 
-echo "Selected architecture: $ARCH_VARIANT"
-echo "Version: $SS_GO_VERSION"
+  build-debian:
+    name: Build Debian Images
+    needs: check-version
+    if: needs.check-version.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: "Debian x86-64-v2"
+            arch: amd64
+            variant: v2
+            platform: linux/amd64
+            suffix: amd64v2
+          - name: "Debian x86-64-v3"
+            arch: amd64
+            variant: v3
+            platform: linux/amd64
+            suffix: amd64v3
+          - name: "Debian ARM64"
+            arch: arm64
+            variant: ""
+            platform: linux/arm64
+            suffix: arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-# 包名格式：shadowsocks-go-v1.14.0-linux-x86-64-v3.tar.zst
-PACKAGE_NAME="shadowsocks-go-${SS_GO_VERSION}-linux-${ARCH_VARIANT}.tar.zst"
-echo "Package name: $PACKAGE_NAME"
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
-# 使用GitHub API获取真实的下载URL
-echo "Fetching download URL from GitHub API..."
-API_URL="https://api.github.com/repos/database64128/shadowsocks-go/releases/tags/${SS_GO_VERSION}"
-echo "API URL: $API_URL"
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-# 从GitHub API获取asset信息
-ASSET_INFO=$(curl -s -H "Accept: application/vnd.github.v3+json" "$API_URL")
-if [ -z "$ASSET_INFO" ]; then
-    echo "ERROR: Failed to fetch release info"
-    exit 1
-fi
+      - name: Debug Info
+        run: |
+          echo "GitHub用户名: ${{ github.repository_owner }}"
+          echo "Docker Hub用户名: ${{ env.DOCKERHUB_USERNAME }}"
+          echo "构建版本: ${{ needs.check-version.outputs.ss_go_version }}"
 
-# 查找匹配的asset
-DOWNLOAD_URL=$(echo "$ASSET_INFO" | jq -r --arg name "$PACKAGE_NAME" '.assets[] | select(.name == $name) | .browser_download_url')
-if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
-    echo "ERROR: Package $PACKAGE_NAME not found in release $SS_GO_VERSION"
-    echo "Available packages:"
-    echo "$ASSET_INFO" | jq -r '.assets[].name'
-    exit 1
-fi
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-echo "Found download URL: $DOWNLOAD_URL"
+      - name: Login to Docker Hub
+        if: env.DOCKERHUB_TOKEN != ''
+        uses: docker/login-action@v3
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
 
-# 下载包 - 使用curl跟随重定向
-echo "Downloading package..."
-if curl -L -f -o "$PACKAGE_NAME" "$DOWNLOAD_URL"; then
-    echo "Download successful!"
-    echo "File size: $(stat -c%s "$PACKAGE_NAME") bytes"
-else
-    echo "ERROR: Download failed with curl"
-    echo "Trying with wget..."
-    if wget -O "$PACKAGE_NAME" "$DOWNLOAD_URL"; then
-        echo "Download successful with wget!"
-    else
-        echo "ERROR: Both curl and wget failed"
-        exit 1
-    fi
-fi
+      - name: Prepare Tags
+        id: tags
+        run: |
+          VERSION="${{ needs.check-version.outputs.ss_go_version }}"
+          REPO_NAME=$(basename "${{ github.repository }}")
+          REPO_LOWER=$(echo "$REPO_NAME" | tr '[:upper:]' '[:lower:]')
+          
+          # GHCR 标签
+          GHCR_REPO="ghcr.io/${{ github.repository_owner }}/${REPO_LOWER}"
+          TAGS="${GHCR_REPO}:${VERSION}-debian-${{ matrix.suffix }}"
+          TAGS="${TAGS},${GHCR_REPO}:latest-debian-${{ matrix.suffix }}"
+          
+          # Docker Hub 标签（如果有凭证）
+          if [ -n "${{ env.DOCKERHUB_USERNAME }}" ]; then
+            DOCKERHUB_REPO="${{ env.DOCKERHUB_USERNAME }}/${REPO_LOWER}"
+            TAGS="${TAGS},${DOCKERHUB_REPO}:${VERSION}-debian-${{ matrix.suffix }}"
+            TAGS="${TAGS},${DOCKERHUB_REPO}:latest-debian-${{ matrix.suffix }}"
+          fi
+          
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+          echo "ghcr_repo=$GHCR_REPO" >> $GITHUB_OUTPUT
 
-# 解压并清理
-tar -xf "$PACKAGE_NAME"
-chmod +x shadowsocks-go
-rm -f shadowsocks-go-domain-set-converter "$PACKAGE_NAME"
-EOF
+      - name: Build and Push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.debian
+          platforms: ${{ matrix.platform }}
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          build-args: |
+            SS_GO_VERSION=${{ needs.check-version.outputs.ss_go_version }}
+            TARGETVARIANT=${{ matrix.variant }}
+          provenance: false
+          sbom: false
 
-FROM debian:stable-slim
+  create-manifests:
+    name: Create Multi-arch Manifests
+    needs: build-debian
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-LABEL maintainer="shadowsocks-go-docker" \
-      org.opencontainers.image.source="https://github.com/database64128/shadowsocks-go" \
-      org.opencontainers.image.description="Shadowsocks-go Docker image based on Debian"
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-# 安装最小运行时依赖
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates tzdata && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+      - name: Login to Docker Hub
+        if: env.DOCKERHUB_TOKEN != ''
+        uses: docker/login-action@v3
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
 
-# 从构建器复制二进制文件
-COPY --from=builder /tmp/shadowsocks-go /usr/local/bin/shadowsocks-go
-COPY entrypoint.sh /entrypoint.sh
-
-# 设置权限和用户
-RUN chmod +x /entrypoint.sh /usr/local/bin/shadowsocks-go && \
-    mkdir -p /etc/ss-go && \
-    useradd -r -s /sbin/nologin -M shadowsocks
-
-USER shadowsocks
-
-VOLUME ["/etc/ss-go"]
-
-ENTRYPOINT ["/entrypoint.sh"]
-CMD ["-confPath", "/etc/ss-go/config.json"]
+      - name: Create Manifests
+        run: |
+          VERSION="${{ needs.check-version.outputs.ss_go_version }}"
+          REPO_NAME=$(basename "${{ github.repository }}")
+          REPO_LOWER=$(echo "$REPO_NAME" | tr '[:upper:]' '[:lower:]")
+          
+          GHCR_REPO="ghcr.io/${{ github.repository_owner }}/${REPO_LOWER}"
+          
+          echo "为 $GHCR_REPO:$VERSION 创建多架构manifest"
+          echo "等待镜像可用..."
+          
+          # 等待镜像推送完成
+          sleep 60
+          
+          # GHCR manifests
+          docker buildx imagetools create -t ${GHCR_REPO}:${VERSION}-debian \
+            ${GHCR_REPO}:${VERSION}-debian-amd64v2 \
+            ${GHCR_REPO}:${VERSION}-debian-amd64v3 \
+            ${GHCR_REPO}:${VERSION}-debian-arm64
+          
+          docker buildx imagetools create -t ${GHCR_REPO}:${VERSION} \
+            ${GHCR_REPO}:${VERSION}-debian-amd64v2 \
+            ${GHCR_REPO}:${VERSION}-debian-amd64v3 \
+            ${GHCR_REPO}:${VERSION}-debian-arm64
+          
+          docker buildx imagetools create -t ${GHCR_REPO}:latest-debian \
+            ${GHCR_REPO}:${VERSION}-debian-amd64v2 \
+            ${GHCR_REPO}:${VERSION}-debian-amd64v3 \
+            ${GHCR_REPO}:${VERSION}-debian-arm64
+          
+          docker buildx imagetools create -t ${GHCR_REPO}:latest \
+            ${GHCR_REPO}:${VERSION}-debian-amd64v2 \
+            ${GHCR_REPO}:${VERSION}-debian-amd64v3 \
+            ${GHCR_REPO}:${VERSION}-debian-arm64
+          
+          # Docker Hub manifests (如果有凭证)
+          if [ -n "${{ env.DOCKERHUB_USERNAME }}" ]; then
+            DOCKERHUB_REPO="${{ env.DOCKERHUB_USERNAME }}/${REPO_LOWER}"
+            echo "为 $DOCKERHUB_REPO:$VERSION 创建多架构manifest"
+            
+            docker buildx imagetools create -t ${DOCKERHUB_REPO}:${VERSION}-debian \
+              ${DOCKERHUB_REPO}:${VERSION}-debian-amd64v2 \
+              ${DOCKERHUB_REPO}:${VERSION}-debian-amd64v3 \
+              ${DOCKERHUB_REPO}:${VERSION}-debian-arm64
+            
+            docker buildx imagetools create -t ${DOCKERHUB_REPO}:${VERSION} \
+              ${DOCKERHUB_REPO}:${VERSION}-debian-amd64v2 \
+              ${DOCKERHUB_REPO}:${VERSION}-debian-amd64v3 \
+              ${DOCKERHUB_REPO}:${VERSION}-debian-arm64
+            
+            docker buildx imagetools create -t ${DOCKERHUB_REPO}:latest-debian \
+              ${DOCKERHUB_REPO}:${VERSION}-debian-amd64v2 \
+              ${DOCKERHUB_REPO}:${VERSION}-debian-amd64v3 \
+              ${DOCKERHUB_REPO}:${VERSION}-debian-arm64
+            
+            docker buildx imagetools create -t ${DOCKERHUB_REPO}:latest \
+              ${DOCKERHUB_REPO}:${VERSION}-debian-amd64v2 \
+              ${DOCKERHUB_REPO}:${VERSION}-debian-amd64v3 \
+              ${DOCKERHUB_REPO}:${VERSION}-debian-arm64
+          fi
