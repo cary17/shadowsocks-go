@@ -25,6 +25,7 @@ jobs:
       - name: Get Version
         id: get_version
         run: |
+          # 使用双引号避免单引号嵌套问题
           if [ -n "${{ inputs.ss_go_version }}" ]; then
             VERSION="${{ inputs.ss_go_version }}"
             echo "Using specified version: $VERSION"
@@ -42,15 +43,6 @@ jobs:
           
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Final version: $VERSION"
-          
-          # 测试API能否访问
-          echo "Testing GitHub API access..."
-          API_URL="https://api.github.com/repos/database64128/shadowsocks-go/releases/tags/${VERSION}"
-          if curl -s -I "$API_URL" | head -n1 | grep "200"; then
-            echo "✓ API access successful"
-          else
-            echo "⚠ API access may have rate limiting"
-          fi
 
   build-debian:
     name: Build Debian Images
@@ -104,7 +96,7 @@ jobs:
         run: |
           VERSION="${{ needs.check-version.outputs.ss_go_version }}"
           REPO_NAME=$(basename "${{ github.repository }}")
-          REPO_LOWER=$(echo "$REPO_NAME" | tr '[:upper:]' '[:lower:]")
+          REPO_LOWER=$(echo "$REPO_NAME" | tr '[:upper:]' '[:lower:]')
           
           GHCR_REPO="ghcr.io/${{ env.GHCR_NAMESPACE }}/${REPO_LOWER}"
           
