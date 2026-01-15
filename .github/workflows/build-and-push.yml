@@ -5,20 +5,15 @@ on:
     - cron: '0 * * * *'  # 北京时间整点运行
   workflow_dispatch:
     inputs:
-      debian_version:
-        description: 'Debian version (e.g., stable-slim, bookworm-slim, bullseye-slim)'
+      version:
+        description: 'Shadowsocks-go version (e.g., v1.14.0, leave empty for latest)'
         required: false
-        default: 'stable-slim'
+        default: ''
         type: string
       force_build:
         description: 'Force build even if version exists'
         required: false
         default: 'false'
-        type: string
-      version:
-        description: 'Shadowsocks-go version (e.g., v1.14.0, leave empty for latest)'
-        required: false
-        default: ''
         type: string
 
 env:
@@ -32,158 +27,37 @@ jobs:
     outputs:
       new_version: ${{ steps.check.outputs.new_version }}
       should_build: ${{ steps.check.outputs.should_build }}
-      version_source: ${{ steps.check.outputs.version_source }}
     steps:
       - name: Check for new release
         id: check
         run: |
-          MAX_RETRIES=5
-          RETRY_DELAY=10
-          
           # 检查是否有手动指定的版本
           MANUAL_VERSION="${{ github.event.inputs.version }}"
           
           if [ -n "$MANUAL_VERSION" ]; then
             echo "Using manually specified version: $MANUAL_VERSION"
-            # 确保版本号以 'v' 开头
             if [[ ! "$MANUAL_VERSION" =~ ^v ]]; then
               MANUAL_VERSION="v$MANUAL_VERSION"
             fi
             echo "new_version=$MANUAL_VERSION" >> $GITHUB_OUTPUT
-            echo "version_source=manual" >> $GITHUB_OUTPUT
-            
-            # 对于手动指定的版本，检查是否需要构建
-            if [ "${{ github.event.inputs.force_build }}" = "true" ]; then
-              echo "Force build enabled for manual version"
-              echo "should_build=true" >> $GITHUB_OUTPUT
-              exit 0
-            fi
-            
-            # 检查 GHCR 是否已存在该版本
-            GHCR_EXISTS=false
-            for i in $(seq 1 $MAX_RETRIES); do
-              echo "Attempt $i of $MAX_RETRIES: Checking if version exists in GHCR..."
-              
-              TOKEN=$(curl -fsSL "https://ghcr.io/token?scope=repository:${{ github.repository_owner }}/shadowsocks-go:pull" | jq -r '.token // empty')
-              
-              if [ -n "$TOKEN" ]; then
-                GHCR_TAGS=$(curl -fsSL -H "Authorization: Bearer $TOKEN" \
-                  "https://ghcr.io/v2/${{ github.repository_owner }}/shadowsocks-go/tags/list" | \
-                  jq -r '.tags[]?')
-                
-                # 检查是否已存在该版本（任何架构变体）
-                if echo "$GHCR_TAGS" | grep -q "^${MANUAL_VERSION}\(-.*\)\?$"; then
-                  echo "Version $MANUAL_VERSION already exists in GHCR"
-                  GHCR_EXISTS=true
-                  break
-                else
-                  echo "Version $MANUAL_VERSION not found in GHCR"
-                  GHCR_EXISTS=false
-                  break
-                fi
-              else
-                echo "Failed to get GHCR token, assuming version doesn't exist"
-                if [ $i -eq $MAX_RETRIES ]; then
-                  GHCR_EXISTS=false
-                else
-                  sleep $RETRY_DELAY
-                fi
-              fi
-            done
-            
-            if [ "$GHCR_EXISTS" = "false" ]; then
-              echo "should_build=true" >> $GITHUB_OUTPUT
-            else
-              echo "should_build=false" >> $GITHUB_OUTPUT
-            fi
+            echo "should_build=true" >> $GITHUB_OUTPUT
             exit 0
           fi
           
           # 自动获取最新版本
-          echo "No manual version specified, fetching latest release..."
-          echo "version_source=auto" >> $GITHUB_OUTPUT
+          echo "Fetching latest release..."
+          LATEST_VERSION=$(curl -s https://api.github.com/repos/database64128/shadowsocks-go/releases/latest | jq -r .tag_name)
           
-          for i in $(seq 1 $MAX_RETRIES); do
-            echo "Attempt $i of $MAX_RETRIES: Fetching shadowsocks-go latest version..."
-            LATEST_VERSION=$(curl -s https://api.github.com/repos/database64128/shadowsocks-go/releases/latest | jq -r .tag_name)
-            
-            if [ -n "$LATEST_VERSION" ] && [ "$LATEST_VERSION" != "null" ]; then
-              echo "Successfully got shadowsocks-go version: $LATEST_VERSION"
-              break
-            else
-              echo "Failed to get valid version, retrying in ${RETRY_DELAY}s..."
-              if [ $i -lt $MAX_RETRIES ]; then
-                sleep $RETRY_DELAY
-              else
-                echo "Error: Failed to get shadowsocks-go version after $MAX_RETRIES attempts"
-                exit 1
-              fi
-            fi
-          done
-          
-          GHCR_LATEST=""
-          for i in $(seq 1 $MAX_RETRIES); do
-            echo "Attempt $i of $MAX_RETRIES: Fetching GHCR latest version..."
-            
-            TOKEN=$(curl -fsSL "https://ghcr.io/token?scope=repository:${{ github.repository_owner }}/shadowsocks-go:pull" | jq -r '.token // empty')
-            
-            if [ -n "$TOKEN" ]; then
-              GHCR_LATEST=$(curl -fsSL -H "Authorization: Bearer $TOKEN" \
-                "https://ghcr.io/v2/${{ github.repository_owner }}/shadowsocks-go/tags/list" | \
-                jq -r '.tags[]? | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))' | sort -V | tail -n1)
-              
-              if [ -n "$GHCR_LATEST" ]; then
-                echo "GHCR has existing version: $GHCR_LATEST"
-                break
-              else
-                echo "No valid versions found in GHCR"
-                break
-              fi
-            else
-              echo "Failed to get GHCR token, retrying in ${RETRY_DELAY}s..."
-              if [ $i -lt $MAX_RETRIES ]; then
-                sleep $RETRY_DELAY
-              else
-                echo "Warning: Failed to get GHCR token, will treat as no existing version"
-                GHCR_LATEST=""
-                break
-              fi
-            fi
-          done
-          
-          echo "Latest shadowsocks-go version: $LATEST_VERSION"
-          echo "GHCR latest version: ${GHCR_LATEST:-none}"
-          
-          if [ "${{ github.event.inputs.force_build }}" = "true" ]; then
-            echo "Force build enabled"
-            echo "new_version=$LATEST_VERSION" >> $GITHUB_OUTPUT
-            echo "should_build=true" >> $GITHUB_OUTPUT
-          elif [ -z "$GHCR_LATEST" ]; then
-            echo "No existing version in GHCR, will build"
+          if [ -n "$LATEST_VERSION" ] && [ "$LATEST_VERSION" != "null" ]; then
+            echo "Latest version: $LATEST_VERSION"
             echo "new_version=$LATEST_VERSION" >> $GITHUB_OUTPUT
             echo "should_build=true" >> $GITHUB_OUTPUT
           else
-            LATEST_NUM="${LATEST_VERSION#v}"
-            GHCR_NUM="${GHCR_LATEST#v}"
-            
-            HIGHER_VERSION=$(printf "%s\n%s" "$LATEST_NUM" "$GHCR_NUM" | sort -V | tail -n1)
-            
-            if [ "$LATEST_NUM" = "$GHCR_NUM" ]; then
-              echo "Versions are the same, skipping build"
-              echo "should_build=false" >> $GITHUB_OUTPUT
-              echo "new_version=$LATEST_VERSION" >> $GITHUB_OUTPUT
-            elif [ "$LATEST_NUM" = "$HIGHER_VERSION" ]; then
-              echo "New version detected: $LATEST_VERSION > $GHCR_LATEST"
-              echo "new_version=$LATEST_VERSION" >> $GITHUB_OUTPUT
-              echo "should_build=true" >> $GITHUB_OUTPUT
-            else
-              echo "GHCR version ($GHCR_LATEST) is newer than latest release ($LATEST_VERSION), skipping build"
-              echo "should_build=false" >> $GITHUB_OUTPUT
-              echo "new_version=$LATEST_VERSION" >> $GITHUB_OUTPUT
-            fi
+            echo "Error: Failed to get version"
+            exit 1
           fi
 
-  build-images:
+  build-base-images:
     needs: check-version
     if: needs.check-version.outputs.should_build == 'true'
     runs-on: ubuntu-latest
@@ -193,10 +67,14 @@ jobs:
     strategy:
       matrix:
         base: [debian, alpine]
-        variant: [default, glibc]
-        exclude:
+        variant: [amd64-v2, amd64-v3, arm64]
+        include:
+          - base: debian
+            base_image: debian:stable-slim
+            base_tag: debian
           - base: alpine
-            variant: glibc  # Alpine 不支持 glibc 变体
+            base_image: alpine:latest
+            base_tag: alpine
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -214,155 +92,135 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Check Docker Hub credentials
-        id: dockerhub
-        run: |
-          if [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ] && [ -n "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
-            echo "enabled=true" >> $GITHUB_OUTPUT
-          else
-            echo "enabled=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Create Docker Hub repository (if not exists)
-        if: steps.dockerhub.outputs.enabled == 'true'
-        run: |
-          REPO_NAME="${{ github.event.repository.name }}"
-          echo "Checking if Docker Hub repository exists: $REPO_NAME"
-          
-          # 尝试获取仓库信息
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-            -H "Authorization: Bearer ${{ secrets.DOCKERHUB_TOKEN }}" \
-            "https://hub.docker.com/v2/repositories/${{ secrets.DOCKERHUB_USERNAME }}/$REPO_NAME/")
-          
-          if [ "$STATUS" = "404" ]; then
-            echo "Repository does not exist, creating..."
-            # 创建私有仓库
-            curl -X POST \
-              -H "Authorization: Bearer ${{ secrets.DOCKERHUB_TOKEN }}" \
-              -H "Content-Type: application/json" \
-              -d '{
-                "namespace": "'"${{ secrets.DOCKERHUB_USERNAME }}"'",
-                "name": "'"$REPO_NAME"'",
-                "is_private": false,
-                "description": "Auto-built shadowsocks-go Docker images",
-                "full_description": "Shadowsocks-go Docker images automatically built from GitHub Actions"
-              }' \
-              "https://hub.docker.com/v2/repositories/"
-            echo "Repository created"
-          elif [ "$STATUS" = "200" ]; then
-            echo "Repository already exists"
-          else
-            echo "Warning: Failed to check repository (HTTP $STATUS)"
-          fi
-
-      - name: Log in to Docker Hub
-        if: steps.dockerhub.outputs.enabled == 'true'
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Prepare tags and platforms
+      - name: Prepare build args
         id: prepare
         run: |
-          VERSION="${{ needs.check-version.outputs.new_version }}"
-          VERSION_SOURCE="${{ needs.check-version.outputs.version_source }}"
-          BASE="${{ matrix.base }}"
-          VARIANT="${{ matrix.variant }}"
-          DEBIAN_VERSION="${{ github.event.inputs.debian_version || 'stable-slim' }}"
+          ARCH=""
+          PLATFORM=""
+          SS_VERSION=""
           
-          echo "Building version: $VERSION (source: $VERSION_SOURCE)"
-          echo "Base: $BASE, Variant: $VARIANT"
-          if [ "$BASE" = "debian" ]; then
-            echo "Debian version: $DEBIAN_VERSION"
-            echo "debian_version=$DEBIAN_VERSION" >> $GITHUB_OUTPUT
-          fi
+          case "${{ matrix.variant }}" in
+            "amd64-v2")
+              ARCH="amd64"
+              PLATFORM="linux/amd64"
+              SS_VERSION="v2"
+              ;;
+            "amd64-v3")
+              ARCH="amd64"
+              PLATFORM="linux/amd64"
+              SS_VERSION="v3"
+              ;;
+            "arm64")
+              ARCH="arm64"
+              PLATFORM="linux/arm64"
+              SS_VERSION=""
+              ;;
+          esac
           
-          # 设置平台
-          PLATFORMS="linux/amd64,linux/arm64"
-          echo "platforms=$PLATFORMS" >> $GITHUB_OUTPUT
-          
-          # 生成标签
-          if [ "$VARIANT" = "default" ]; then
-            SUFFIX=""
-          else
-            SUFFIX="-$VARIANT"
-          fi
-          
-          BASE_SUFFIX="-$BASE"
-          
-          # GHCR 标签
-          TAGS="${{ env.GHCR_IMAGE }}:${VERSION}${SUFFIX}${BASE_SUFFIX}"
-          
-          # 对于自动检测的最新版本，添加 latest 标签
-          if [ "$VERSION_SOURCE" = "auto" ]; then
-            TAGS="$TAGS
-            ${{ env.GHCR_IMAGE }}:latest${SUFFIX}${BASE_SUFFIX}"
-            
-            # 对于默认变体和 debian 基础镜像，添加无后缀标签
-            if [ "$VARIANT" = "default" ] && [ "$BASE" = "debian" ]; then
-              TAGS="$TAGS
-              ${{ env.GHCR_IMAGE }}:${VERSION}
-              ${{ env.GHCR_IMAGE }}:latest"
-            fi
-          fi
-          
-          # Docker Hub 标签
-          if [ "${{ steps.dockerhub.outputs.enabled }}" = "true" ]; then
-            TAGS="$TAGS
-            ${{ env.DOCKERHUB_IMAGE }}:${VERSION}${SUFFIX}${BASE_SUFFIX}"
-            
-            if [ "$VERSION_SOURCE" = "auto" ]; then
-              TAGS="$TAGS
-              ${{ env.DOCKERHUB_IMAGE }}:latest${SUFFIX}${BASE_SUFFIX}"
-              
-              if [ "$VARIANT" = "default" ] && [ "$BASE" = "debian" ]; then
-                TAGS="$TAGS
-                ${{ env.DOCKERHUB_IMAGE }}:${VERSION}
-                ${{ env.DOCKERHUB_IMAGE }}:latest"
-              fi
-            fi
-          fi
-          
-          echo "tags<<EOF" >> $GITHUB_OUTPUT
-          echo "$TAGS" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          echo "arch=$ARCH" >> $GITHUB_OUTPUT
+          echo "platform=$PLATFORM" >> $GITHUB_OUTPUT
+          echo "ss_version=$SS_VERSION" >> $GITHUB_OUTPUT
 
-      - name: Build and push
+      - name: Build and push variant
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./Dockerfile.${{ matrix.base }}
-          platforms: ${{ steps.prepare.outputs.platforms }}
-          push: true
-          tags: ${{ steps.prepare.outputs.tags }}
-          build-args: |
-            VERSION=${{ needs.check-version.outputs.new_version }}
-            VARIANT=${{ matrix.variant }}
-            ${{ matrix.base == 'debian' && format('DEBIAN_VERSION={0}', fromJSON(steps.prepare.outputs.debian_version) || 'stable-slim') || '' }}
-          cache-from: type=gha,scope=${{ matrix.base }}-${{ matrix.variant }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.base }}-${{ matrix.variant }}
-        continue-on-error: true
-        id: build-push
-
-      - name: Build and push to GHCR only (fallback)
-        if: steps.build-push.outcome == 'failure'
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile.${{ matrix.base }}
-          platforms: ${{ steps.prepare.outputs.platforms }}
+          file: ./Dockerfile
+          platforms: ${{ steps.prepare.outputs.platform }}
           push: true
           tags: |
-            ${{ env.GHCR_IMAGE }}:${{ needs.check-version.outputs.new_version }}-${{ matrix.variant }}-${{ matrix.base }}
+            ${{ env.GHCR_IMAGE }}:${{ needs.check-version.outputs.new_version }}-${{ matrix.base_tag }}-${{ matrix.variant }}
           build-args: |
             VERSION=${{ needs.check-version.outputs.new_version }}
-            VARIANT=${{ matrix.variant }}
-            ${{ matrix.base == 'debian' && format('DEBIAN_VERSION={0}', fromJSON(steps.prepare.outputs.debian_version) || 'stable-slim') || '' }}
+            BASE_IMAGE=${{ matrix.base_image }}
+            ARCH=${{ steps.prepare.outputs.arch }}
+            SS_VERSION=${{ steps.prepare.outputs.ss_version }}
           cache-from: type=gha,scope=${{ matrix.base }}-${{ matrix.variant }}
           cache-to: type=gha,mode=max,scope=${{ matrix.base }}-${{ matrix.variant }}
+          target: runtime
+        id: build-push
 
-      - name: Notify about Docker Hub push failure
-        if: steps.build-push.outcome == 'failure'
+  create-manifests:
+    needs: build-base-images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.GHCR_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push manifests
         run: |
-          echo "::warning::Failed to push to Docker Hub. Image pushed to GHCR only."
+          VERSION="${{ needs.check-version.outputs.new_version }}"
+          
+          # 为每个基础镜像创建 manifest
+          for BASE in debian alpine; do
+            echo "Creating manifest for $BASE..."
+            
+            # 版本标签
+            docker manifest create $GHCR_IMAGE:${VERSION}-${BASE} \
+              $GHCR_IMAGE:${VERSION}-${BASE}-amd64-v2 \
+              $GHCR_IMAGE:${VERSION}-${BASE}-amd64-v3 \
+              $GHCR_IMAGE:${VERSION}-${BASE}-arm64
+            
+            # 添加注解
+            docker manifest annotate $GHCR_IMAGE:${VERSION}-${BASE} \
+              $GHCR_IMAGE:${VERSION}-${BASE}-amd64-v2 \
+              --os linux --arch amd64 \
+              --variant v2 \
+              --annotation "com.shadowsocks.cpu.features=SSE4.2,POPCNT" \
+              --annotation "com.shadowsocks.base=$BASE" \
+              --annotation "com.shadowsocks.description=Compatible version for older x86_64 CPUs on $BASE"
+            
+            docker manifest annotate $GHCR_IMAGE:${VERSION}-${BASE} \
+              $GHCR_IMAGE:${VERSION}-${BASE}-amd64-v3 \
+              --os linux --arch amd64 \
+              --variant v3 \
+              --annotation "com.shadowsocks.cpu.features=AVX2,BMI1,BMI2" \
+              --annotation "com.shadowsocks.base=$BASE" \
+              --annotation "com.shadowsocks.description=Optimized version for newer x86_64 CPUs on $BASE"
+            
+            docker manifest annotate $GHCR_IMAGE:${VERSION}-${BASE} \
+              $GHCR_IMAGE:${VERSION}-${BASE}-arm64 \
+              --os linux --arch arm64 \
+              --variant v8 \
+              --annotation "com.shadowsocks.base=$BASE" \
+              --annotation "com.shadowsocks.description=ARM64 version on $BASE"
+            
+            # 推送版本标签
+            docker manifest push $GHCR_IMAGE:${VERSION}-${BASE}
+            
+            # 创建 latest-{base} 标签
+            docker manifest create $GHCR_IMAGE:latest-${BASE} \
+              $GHCR_IMAGE:${VERSION}-${BASE}-amd64-v2 \
+              $GHCR_IMAGE:${VERSION}-${BASE}-amd64-v3 \
+              $GHCR_IMAGE:${VERSION}-${BASE}-arm64
+            
+            docker manifest push $GHCR_IMAGE:latest-${BASE}
+          done
+          
+          # 创建默认标签（指向 debian）
+          echo "Creating default manifests..."
+          docker manifest create $GHCR_IMAGE:${VERSION} \
+            $GHCR_IMAGE:${VERSION}-debian-amd64-v2 \
+            $GHCR_IMAGE:${VERSION}-debian-amd64-v3 \
+            $GHCR_IMAGE:${VERSION}-debian-arm64
+          
+          docker manifest push $GHCR_IMAGE:${VERSION}
+          
+          docker manifest create $GHCR_IMAGE:latest \
+            $GHCR_IMAGE:${VERSION}-debian-amd64-v2 \
+            $GHCR_IMAGE:${VERSION}-debian-amd64-v3 \
+            $GHCR_IMAGE:${VERSION}-debian-arm64
+          
+          docker manifest push $GHCR_IMAGE:latest
+          
+          echo "All manifests created successfully!"
