@@ -27,26 +27,27 @@ RUN ARCH_VARIANT="" && \
     else \
         echo "Unsupported architecture: $TARGETARCH" && exit 1; \
     fi && \
-    # 包名格式：shadowsocks-go-v1.14.0-linux-x86-64-v2.tar.zst
+    # 包名格式：shadowsocks-go-v1.11.0-linux-x86-64-v2.tar.zst
     PACKAGE_NAME="shadowsocks-go-${SS_GO_VERSION}-linux-${ARCH_VARIANT}.tar.zst" && \
     DOWNLOAD_URL="https://github.com/database64128/shadowsocks-go/releases/download/${SS_GO_VERSION}/${PACKAGE_NAME}" && \
     echo "Selected architecture: $ARCH_VARIANT" && \
     echo "Version: $SS_GO_VERSION" && \
     echo "Package name: $PACKAGE_NAME" && \
     echo "Download URL: $DOWNLOAD_URL" && \
-    # 直接下载
-    echo "Downloading package..." && \
-    if wget --no-verbose --show-progress "$DOWNLOAD_URL"; then \
+    # 使用 curl 下载，正确处理重定向
+    echo "Downloading package with curl..." && \
+    if curl -L -o "$PACKAGE_NAME" "$DOWNLOAD_URL"; then \
         echo "Download successful!" && \
         echo "File size: $(stat -c%s "$PACKAGE_NAME") bytes"; \
     else \
         echo "ERROR: Download failed!" && \
-        echo "Testing if URL exists..." && \
-        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -I "$DOWNLOAD_URL") && \
-        echo "HTTP Status: $HTTP_CODE" && \
-        echo "Available packages for $SS_GO_VERSION:" && \
-        curl -s "https://api.github.com/repos/database64128/shadowsocks-go/releases" | \
-          jq -r --arg version "$SS_GO_VERSION" '.[] | select(.tag_name == $version) | .assets[].name' | head -20 && \
+        echo "Checking if URL exists..." && \
+        curl -I "$DOWNLOAD_URL" && \
+        echo "Trying alternative URL format..." && \
+        # 尝试不带v前缀的版本
+        ALT_URL="https://github.com/database64128/shadowsocks-go/releases/download/${SS_GO_VERSION#v}/${PACKAGE_NAME}" && \
+        echo "Alternative URL: $ALT_URL" && \
+        curl -I "$ALT_URL" || true && \
         exit 1; \
     fi && \
     # 解压并清理
