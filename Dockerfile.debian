@@ -11,65 +11,76 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends wget curl zstd ca-certificates jq && \
     rm -rf /var/lib/apt/lists/*
 
-# 根据架构选择版本
-RUN ARCH_VARIANT="" && \
-    if [ "$TARGETARCH" = "amd64" ]; then \
-        if [ "$TARGETVARIANT" = "v3" ]; then \
-            ARCH_VARIANT="x86-64-v3"; \
-            echo "Using x86-64-v3"; \
-        else \
-            ARCH_VARIANT="x86-64-v2"; \
-            echo "Using x86-64-v2"; \
-        fi; \
-    elif [ "$TARGETARCH" = "arm64" ]; then \
-        ARCH_VARIANT="arm64"; \
-        echo "Using arm64"; \
-    else \
-        echo "Unsupported architecture: $TARGETARCH" && exit 1; \
-    fi && \
-    echo "Selected architecture: $ARCH_VARIANT" && \
-    echo "Version: $SS_GO_VERSION" && \
-    # 包名格式：shadowsocks-go-v1.14.0-linux-x86-64-v3.tar.zst
-    PACKAGE_NAME="shadowsocks-go-${SS_GO_VERSION}-linux-${ARCH_VARIANT}.tar.zst" && \
-    echo "Package name: $PACKAGE_NAME" && \
-    # 使用GitHub API获取真实的下载URL
-    echo "Fetching download URL from GitHub API..." && \
-    API_URL="https://api.github.com/repos/database64128/shadowsocks-go/releases/tags/${SS_GO_VERSION}" && \
-    echo "API URL: $API_URL" && \
-    # 从GitHub API获取asset信息
-    ASSET_INFO=$(curl -s -H "Accept: application/vnd.github.v3+json" "$API_URL") && \
-    if [ -z "$ASSET_INFO" ]; then \
-        echo "ERROR: Failed to fetch release info"; \
-        exit 1; \
-    fi && \
-    # 查找匹配的asset
-    DOWNLOAD_URL=$(echo "$ASSET_INFO" | jq -r --arg name "$PACKAGE_NAME" '.assets[] | select(.name == $name) | .browser_download_url') && \
-    if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then \
-        echo "ERROR: Package $PACKAGE_NAME not found in release $SS_GO_VERSION" && \
-        echo "Available packages:" && \
-        echo "$ASSET_INFO" | jq -r '.assets[].name' && \
-        exit 1; \
-    fi && \
-    echo "Found download URL: $DOWNLOAD_URL" && \
-    # 下载包 - 使用curl跟随重定向
-    echo "Downloading package..." && \
-    if curl -L -f -o "$PACKAGE_NAME" "$DOWNLOAD_URL"; then \
-        echo "Download successful!" && \
-        echo "File size: $(stat -c%s "$PACKAGE_NAME") bytes"; \
-    else \
-        echo "ERROR: Download failed with curl" && \
-        echo "Trying with wget..." && \
-        if wget -O "$PACKAGE_NAME" "$DOWNLOAD_URL"; then \
-            echo "Download successful with wget!"; \
-        else \
-            echo "ERROR: Both curl and wget failed"; \
-            exit 1; \
-        fi; \
-    fi && \
-    # 解压并清理
-    tar -xf "$PACKAGE_NAME" && \
-    chmod +x shadowsocks-go && \
-    rm -f shadowsocks-go-domain-set-converter "$PACKAGE_NAME"
+# 根据架构选择版本 - 使用heredoc避免单引号问题
+RUN /bin/bash << 'EOF'
+ARCH_VARIANT=""
+if [ "$TARGETARCH" = "amd64" ]; then
+    if [ "$TARGETVARIANT" = "v3" ]; then
+        ARCH_VARIANT="x86-64-v3"
+        echo "Using x86-64-v3"
+    else
+        ARCH_VARIANT="x86-64-v2"
+        echo "Using x86-64-v2"
+    fi
+elif [ "$TARGETARCH" = "arm64" ]; then
+    ARCH_VARIANT="arm64"
+    echo "Using arm64"
+else
+    echo "Unsupported architecture: $TARGETARCH"
+    exit 1
+fi
+
+echo "Selected architecture: $ARCH_VARIANT"
+echo "Version: $SS_GO_VERSION"
+
+# 包名格式：shadowsocks-go-v1.14.0-linux-x86-64-v3.tar.zst
+PACKAGE_NAME="shadowsocks-go-${SS_GO_VERSION}-linux-${ARCH_VARIANT}.tar.zst"
+echo "Package name: $PACKAGE_NAME"
+
+# 使用GitHub API获取真实的下载URL
+echo "Fetching download URL from GitHub API..."
+API_URL="https://api.github.com/repos/database64128/shadowsocks-go/releases/tags/${SS_GO_VERSION}"
+echo "API URL: $API_URL"
+
+# 从GitHub API获取asset信息
+ASSET_INFO=$(curl -s -H "Accept: application/vnd.github.v3+json" "$API_URL")
+if [ -z "$ASSET_INFO" ]; then
+    echo "ERROR: Failed to fetch release info"
+    exit 1
+fi
+
+# 查找匹配的asset
+DOWNLOAD_URL=$(echo "$ASSET_INFO" | jq -r --arg name "$PACKAGE_NAME" '.assets[] | select(.name == $name) | .browser_download_url')
+if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
+    echo "ERROR: Package $PACKAGE_NAME not found in release $SS_GO_VERSION"
+    echo "Available packages:"
+    echo "$ASSET_INFO" | jq -r '.assets[].name'
+    exit 1
+fi
+
+echo "Found download URL: $DOWNLOAD_URL"
+
+# 下载包 - 使用curl跟随重定向
+echo "Downloading package..."
+if curl -L -f -o "$PACKAGE_NAME" "$DOWNLOAD_URL"; then
+    echo "Download successful!"
+    echo "File size: $(stat -c%s "$PACKAGE_NAME") bytes"
+else
+    echo "ERROR: Download failed with curl"
+    echo "Trying with wget..."
+    if wget -O "$PACKAGE_NAME" "$DOWNLOAD_URL"; then
+        echo "Download successful with wget!"
+    else
+        echo "ERROR: Both curl and wget failed"
+        exit 1
+    fi
+fi
+
+# 解压并清理
+tar -xf "$PACKAGE_NAME"
+chmod +x shadowsocks-go
+rm -f shadowsocks-go-domain-set-converter "$PACKAGE_NAME"
+EOF
 
 FROM debian:stable-slim
 
