@@ -34,8 +34,9 @@ jobs:
           # 检查是否有手动指定的版本
           MANUAL_VERSION="${{ github.event.inputs.version }}"
           
-          if [ -n "$MANUAL_VERSION" ]; then
+          if [ -n "$MANUAL_VERSION" ] && [ "$MANUAL_VERSION" != "" ]; then
             echo "Using manually specified version: $MANUAL_VERSION"
+            # 确保版本号以 'v' 开头
             if [[ ! "$MANUAL_VERSION" =~ ^v ]]; then
               MANUAL_VERSION="v$MANUAL_VERSION"
             fi
@@ -46,16 +47,31 @@ jobs:
           
           # 自动获取最新版本
           echo "Fetching latest release..."
-          LATEST_VERSION=$(curl -s https://api.github.com/repos/database64128/shadowsocks-go/releases/latest | jq -r .tag_name)
           
-          if [ -n "$LATEST_VERSION" ] && [ "$LATEST_VERSION" != "null" ]; then
-            echo "Latest version: $LATEST_VERSION"
-            echo "new_version=$LATEST_VERSION" >> $GITHUB_OUTPUT
-            echo "should_build=true" >> $GITHUB_OUTPUT
-          else
-            echo "Error: Failed to get version"
-            exit 1
-          fi
+          # 增加重试机制
+          MAX_RETRIES=3
+          RETRY_DELAY=5
+          
+          for i in $(seq 1 $MAX_RETRIES); do
+            echo "Attempt $i of $MAX_RETRIES"
+            LATEST_VERSION=$(curl -s https://api.github.com/repos/database64128/shadowsocks-go/releases/latest | jq -r .tag_name)
+            
+            if [ -n "$LATEST_VERSION" ] && [ "$LATEST_VERSION" != "null" ] && [ "$LATEST_VERSION" != "" ]; then
+              echo "Latest version: $LATEST_VERSION"
+              echo "new_version=$LATEST_VERSION" >> $GITHUB_OUTPUT
+              echo "should_build=true" >> $GITHUB_OUTPUT
+              exit 0
+            else
+              echo "Failed to get valid version (got: '$LATEST_VERSION')"
+              if [ $i -lt $MAX_RETRIES ]; then
+                echo "Retrying in ${RETRY_DELAY}s..."
+                sleep $RETRY_DELAY
+              fi
+            fi
+          done
+          
+          echo "Error: Failed to get version after $MAX_RETRIES attempts"
+          exit 1
 
   build-variants:
     needs: check-version
@@ -121,6 +137,14 @@ jobs:
           echo "platform=$PLATFORM" >> $GITHUB_OUTPUT
           echo "ss_version=$SS_VERSION" >> $GITHUB_OUTPUT
 
+      - name: Debug output
+        run: |
+          echo "Version from check-version job: ${{ needs.check-version.outputs.new_version }}"
+          echo "Base: ${{ matrix.base }}"
+          echo "Variant: ${{ matrix.variant }}"
+          echo "Dockerfile: ${{ matrix.dockerfile }}"
+          echo "Base tag: ${{ matrix.base_tag }}"
+
       - name: Build and push variant
         uses: docker/build-push-action@v5
         with:
@@ -155,19 +179,44 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Debug information
+        run: |
+          echo "Version to use: ${{ needs.check-version.outputs.new_version }}"
+          echo "GHCR Image: ${{ env.GHCR_IMAGE }}"
+
       - name: Create and push manifests
         run: |
           VERSION="${{ needs.check-version.outputs.new_version }}"
           
+          # 验证版本号不为空
+          if [ -z "$VERSION" ]; then
+            echo "Error: VERSION is empty!"
+            exit 1
+          fi
+          
+          echo "Creating manifests for version: $VERSION"
+          
           # 为每个基础镜像创建 manifest
           for BASE in debian alpine; do
             echo "Creating manifest for $BASE..."
+            
+            # 验证所有需要的镜像都存在
+            echo "Checking if all required images exist..."
+            for VARIANT in amd64-v2 amd64-v3 arm64; do
+              IMAGE_TAG="$GHCR_IMAGE:${VERSION}-${BASE}-${VARIANT}"
+              echo "Checking: $IMAGE_TAG"
+            done
             
             # 版本标签
             docker manifest create $GHCR_IMAGE:${VERSION}-${BASE} \
               $GHCR_IMAGE:${VERSION}-${BASE}-amd64-v2 \
               $GHCR_IMAGE:${VERSION}-${BASE}-amd64-v3 \
               $GHCR_IMAGE:${VERSION}-${BASE}-arm64
+            
+            if [ $? -ne 0 ]; then
+              echo "Error creating manifest for $VERSION-$BASE"
+              exit 1
+            fi
             
             # 添加注解
             docker manifest annotate $GHCR_IMAGE:${VERSION}-${BASE} \
@@ -194,7 +243,13 @@ jobs:
               --annotation "com.shadowsocks.description=ARM64 version on $BASE"
             
             # 推送版本标签
+            echo "Pushing manifest: $GHCR_IMAGE:${VERSION}-${BASE}"
             docker manifest push $GHCR_IMAGE:${VERSION}-${BASE}
+            
+            if [ $? -ne 0 ]; then
+              echo "Error pushing manifest for $VERSION-$BASE"
+              exit 1
+            fi
             
             # 创建 latest-{base} 标签
             docker manifest create $GHCR_IMAGE:latest-${BASE} \
@@ -202,16 +257,19 @@ jobs:
               $GHCR_IMAGE:${VERSION}-${BASE}-amd64-v3 \
               $GHCR_IMAGE:${VERSION}-${BASE}-arm64
             
+            echo "Pushing manifest: $GHCR_IMAGE:latest-${BASE}"
             docker manifest push $GHCR_IMAGE:latest-${BASE}
           done
           
           # 创建默认标签（指向 debian）
           echo "Creating default manifests..."
+          
           docker manifest create $GHCR_IMAGE:${VERSION} \
             $GHCR_IMAGE:${VERSION}-debian-amd64-v2 \
             $GHCR_IMAGE:${VERSION}-debian-amd64-v3 \
             $GHCR_IMAGE:${VERSION}-debian-arm64
           
+          echo "Pushing manifest: $GHCR_IMAGE:${VERSION}"
           docker manifest push $GHCR_IMAGE:${VERSION}
           
           docker manifest create $GHCR_IMAGE:latest \
@@ -219,6 +277,7 @@ jobs:
             $GHCR_IMAGE:${VERSION}-debian-amd64-v3 \
             $GHCR_IMAGE:${VERSION}-debian-arm64
           
+          echo "Pushing manifest: $GHCR_IMAGE:latest"
           docker manifest push $GHCR_IMAGE:latest
           
           echo "All manifests created successfully!"
