@@ -19,6 +19,7 @@ on:
 env:
   DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
   DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+  ACTIONS_TOKEN: ${{ secrets.ACTIONS_TOKEN }}
 
 jobs:
   check-existing:
@@ -30,6 +31,8 @@ jobs:
     steps:
       - name: 检查是否存在相同版本
         id: check
+        env:
+          ACTIONS_TOKEN: ${{ secrets.ACTIONS_TOKEN }}
         run: |
           /bin/bash << 'EOF'
           # 获取输入的版本号
@@ -38,7 +41,15 @@ jobs:
           # 如果输入为空，从GitHub API获取最新版本
           if [ -z "$INPUT_VERSION" ]; then
             echo "输入版本为空，尝试获取最新版本..."
-            API_RESPONSE=$(curl -s https://api.github.com/repos/database64128/shadowsocks-go/releases/latest)
+            # 尝试使用 ACTIONS_TOKEN 获取
+            if [ -n "$ACTIONS_TOKEN" ]; then
+              echo "使用 ACTIONS_TOKEN 获取最新版本..."
+              API_RESPONSE=$(curl -s -H "Authorization: token $ACTIONS_TOKEN" \
+                -H "Accept: application/vnd.github.v3+json" \
+                https://api.github.com/repos/database64128/shadowsocks-go/releases/latest)
+            else
+              API_RESPONSE=$(curl -s https://api.github.com/repos/database64128/shadowsocks-go/releases/latest)
+            fi
             if echo "$API_RESPONSE" | grep -q "tag_name"; then
               INPUT_VERSION=$(echo "$API_RESPONSE" | jq -r '.tag_name')
               echo "从API获取到最新版本: $INPUT_VERSION"
@@ -180,6 +191,8 @@ jobs:
 
       - name: Build and Push Multi-arch Images
         uses: docker/build-push-action@v5
+        env:
+          ACTIONS_TOKEN: ${{ secrets.ACTIONS_TOKEN }}
         with:
           context: .
           file: Dockerfile.debian
@@ -188,6 +201,7 @@ jobs:
           tags: ${{ steps.tags.outputs.tags }}
           build-args: |
             SS_GO_VERSION=${{ needs.get-version.outputs.ss_go_version }}
+            ACTIONS_TOKEN=${{ secrets.ACTIONS_TOKEN }}
           provenance: false
           sbom: false
 
@@ -235,6 +249,6 @@ jobs:
           echo ""
           echo "5. 使用示例:"
           echo "   docker run -d --name ss-go ${REPO}:latest -confPath /etc/ss-go/config.json"
-          echo "   或指定版本:"
+          echo "  或指定版本:"
           echo "   docker run -d --name ss-go ${REPO}:${VERSION} -confPath /etc/ss-go/config.json"
           EOF
