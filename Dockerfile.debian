@@ -3,6 +3,7 @@ FROM debian:stable-slim AS builder
 ARG TARGETARCH
 ARG TARGETVARIANT
 ARG SS_GO_VERSION
+ARG ACTIONS_TOKEN
 
 WORKDIR /tmp
 
@@ -50,8 +51,16 @@ echo "从GitHub API获取下载URL..."
 API_URL="https://api.github.com/repos/database64128/shadowsocks-go/releases/tags/${SS_GO_VERSION}"
 echo "API URL: $API_URL"
 
-# 从GitHub API获取asset信息
-ASSET_INFO=$(curl -s -H "Accept: application/vnd.github.v3+json" "$API_URL")
+# 从GitHub API获取asset信息，优先使用 ACTIONS_TOKEN
+if [ -n "$ACTIONS_TOKEN" ]; then
+    echo "使用 ACTIONS_TOKEN 获取发布信息..."
+    ASSET_INFO=$(curl -s -H "Accept: application/vnd.github.v3+json" \
+                     -H "Authorization: token $ACTIONS_TOKEN" \
+                     "$API_URL")
+else
+    ASSET_INFO=$(curl -s -H "Accept: application/vnd.github.v3+json" "$API_URL")
+fi
+
 if [ -z "$ASSET_INFO" ]; then
     echo "错误: 无法获取发布信息"
     exit 1
@@ -68,19 +77,42 @@ fi
 
 echo "找到下载URL: $DOWNLOAD_URL"
 
-# 下载包
+# 下载包，优先使用 ACTIONS_TOKEN
 echo "下载包..."
-if curl -L -f -o "$PACKAGE_NAME" "$DOWNLOAD_URL"; then
-    echo "下载成功!"
-    echo "文件大小: $(stat -c%s "$PACKAGE_NAME") 字节"
-else
-    echo "错误: curl下载失败"
-    echo "尝试使用wget..."
-    if wget -O "$PACKAGE_NAME" "$DOWNLOAD_URL"; then
-        echo "wget下载成功!"
+if [ -n "$ACTIONS_TOKEN" ]; then
+    echo "使用 ACTIONS_TOKEN 下载..."
+    if curl -L -f -H "Authorization: token $ACTIONS_TOKEN" -o "$PACKAGE_NAME" "$DOWNLOAD_URL"; then
+        echo "使用 ACTIONS_TOKEN 下载成功!"
+        echo "文件大小: $(stat -c%s "$PACKAGE_NAME") 字节"
     else
-        echo "错误: curl和wget都失败了"
-        exit 1
+        echo "使用 ACTIONS_TOKEN 下载失败，尝试普通下载..."
+        if curl -L -f -o "$PACKAGE_NAME" "$DOWNLOAD_URL"; then
+            echo "普通下载成功!"
+        else
+            echo "错误: 下载失败"
+            echo "尝试使用wget..."
+            if wget -O "$PACKAGE_NAME" "$DOWNLOAD_URL"; then
+                echo "wget下载成功!"
+            else
+                echo "错误: curl和wget都失败了"
+                exit 1
+            fi
+        fi
+    fi
+else
+    echo "使用普通方式下载..."
+    if curl -L -f -o "$PACKAGE_NAME" "$DOWNLOAD_URL"; then
+        echo "普通下载成功!"
+        echo "文件大小: $(stat -c%s "$PACKAGE_NAME") 字节"
+    else
+        echo "错误: curl下载失败"
+        echo "尝试使用wget..."
+        if wget -O "$PACKAGE_NAME" "$DOWNLOAD_URL"; then
+            echo "wget下载成功!"
+        else
+            echo "错误: curl和wget都失败了"
+            exit 1
+        fi
     fi
 fi
 
