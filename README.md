@@ -5,7 +5,7 @@
 ## 特性
 
 - 🚀 自动检测 CPU 架构并下载对应版本（x86-64-v2/v3, arm64）
-- 🐧 双基础镜像：Debian stable-slim 和 Alpine latest
+- 🐧 基础镜像：Debian stable-slim
 - 🔄 每小时自动检测新版本并构建
 - 📦 最小化镜像体积，多阶段构建
 - 🔧 支持环境变量配置和挂载配置文件
