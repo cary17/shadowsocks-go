@@ -18,10 +18,6 @@
 - `latest` / `latest-debian` - Debian stable-slim 最新版
 - `v1.14.0` / `v1.14.0-debian` - 指定版本
 
-### Alpine 基础镜像
-- `latest-alpine` - Alpine latest 最新版
-- `v1.14.0-alpine` - 指定版本
-
 ## 快速开始
 
 ### 使用环境变量（服务端）
