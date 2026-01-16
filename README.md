@@ -55,11 +55,12 @@ docker-compose up -d
 ## 生成 PSK
 
 使用 `openssl` 生成随机密钥：
-```bash
 # 2022-blake3-aes-128-gcm
+```bash
 openssl rand -base64 16
-
+```
 # 2022-blake3-aes-256-gcm
+```bash
 openssl rand -base64 32
 ```
 
@@ -102,8 +103,8 @@ docker run -d \
 
 ## 镜像仓库
 
-- **GitHub Container Registry**: `ghcr.io/cary17/shadowsocks-go`
-- **Docker Hub**（可选）: `cary17/shadowsocks-go`
+- **GitHub Container Registry**: `ghcr.io/cary17/shadowsocks-go:latest`
+- **Docker Hub**（可选）: `cary17/shadowsocks-go:latest`
 
 ## 配置文件格式
 
