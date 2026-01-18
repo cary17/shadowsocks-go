@@ -178,11 +178,11 @@ jobs:
           fi
           
           GHCR_REPO="ghcr.io/${{ github.repository_owner }}/$REPO_LOWER"
-          TAGS="${GHCR_REPO}:${VERSION}"
+          TAGS="${GHCR_REPO}:${VERSION},${GHCR_REPO}:latest"
           
           if [ -n "${{ env.DOCKERHUB_USERNAME }}" ]; then
             DOCKERHUB_REPO="${{ env.DOCKERHUB_USERNAME }}/$REPO_LOWER"
-            TAGS="${TAGS},${DOCKERHUB_REPO}:${VERSION}"
+            TAGS="${TAGS},${DOCKERHUB_REPO}:${VERSION},${DOCKERHUB_REPO}:latest"
           fi
           
           echo "标签: $TAGS"
@@ -205,89 +205,9 @@ jobs:
           provenance: false
           sbom: false
 
-  build-pure-latest:
-    name: Build and Push Pure Latest Tag
-    needs: [check-existing, get-version, build-and-push]
-    if: ${{ needs.check-existing.outputs.need_build == 'true' && needs.get-version.outputs.ss_go_version != '' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver-opts: |
-            image=moby/buildkit:master
-
-      - name: Debug Info
-        run: |
-          echo "准备构建纯latest标签"
-          echo "版本号: ${{ needs.get-version.outputs.ss_go_version }}"
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Login to Docker Hub
-        if: env.DOCKERHUB_TOKEN != ''
-        uses: docker/login-action@v3
-        with:
-          username: ${{ env.DOCKERHUB_USERNAME }}
-          password: ${{ env.DOCKERHUB_TOKEN }}
-
-      - name: Prepare Pure Latest Tags
-        id: pure-latest-tags
-        run: |
-          /bin/bash << 'EOF'
-          REPO_NAME="shadowsocks-go"
-          REPO_LOWER="shadowsocks-go"
-          
-          echo "准备纯latest标签镜像"
-          echo "仓库名: $REPO_LOWER"
-          
-          GHCR_REPO="ghcr.io/${{ github.repository_owner }}/$REPO_LOWER"
-          TAGS="${GHCR_REPO}:latest"
-          
-          if [ -n "${{ env.DOCKERHUB_USERNAME }}" ]; then
-            DOCKERHUB_REPO="${{ env.DOCKERHUB_USERNAME }}/$REPO_LOWER"
-            TAGS="${TAGS},${DOCKERHUB_REPO}:latest"
-          fi
-          
-          echo "纯latest标签: $TAGS"
-          echo "tags=$TAGS" >> $GITHUB_OUTPUT
-          EOF
-
-      - name: Build and Push Pure Latest Tag
-        uses: docker/build-push-action@v5
-        env:
-          ACTIONS_TOKEN: ${{ secrets.ACTIONS_TOKEN }}
-        with:
-          context: .
-          file: Dockerfile.debian
-          platforms: linux/amd64/v2,linux/amd64/v3,linux/arm64
-          push: true
-          tags: ${{ steps.pure-latest-tags.outputs.tags }}
-          build-args: |
-            SS_GO_VERSION=${{ needs.get-version.outputs.ss_go_version }}
-            ACTIONS_TOKEN=${{ secrets.ACTIONS_TOKEN }}
-          provenance: false
-          sbom: false
-          cache-from: type=gha,scope=shadowsocks-go-pure-latest
-          cache-to: type=gha,mode=max,scope=shadowsocks-go-pure-latest
-
   verify:
     name: Verify Build
-    needs: [build-and-push, build-pure-latest]
+    needs: build-and-push
     runs-on: ubuntu-latest
     steps:
       - name: 登录到 GHCR
@@ -306,53 +226,29 @@ jobs:
           echo "=== 镜像验证 ==="
           echo ""
           
-          echo "1. 验证版本号标签 ${VERSION} 的多架构 manifest:"
-          docker manifest inspect "${REPO}:${VERSION}" | jq '.manifests[] | {architecture: .platform.architecture, variant: .platform.variant, os: .platform.os}'
-          
-          echo ""
-          echo "2. 验证纯 latest 标签的多架构 manifest:"
+          echo "1. 验证 latest 标签的多架构 manifest:"
           docker manifest inspect "${REPO}:latest" | jq '.manifests[] | {architecture: .platform.architecture, variant: .platform.variant, os: .platform.os}'
           
           echo ""
+          echo "2. 验证 ${VERSION} 标签的多架构 manifest:"
+          docker manifest inspect "${REPO}:${VERSION}" | jq '.manifests[] | {architecture: .platform.architecture, variant: .platform.variant, os: .platform.os}'
+          
+          echo ""
           echo "3. 测试拉取镜像:"
-          echo "   拉取版本号标签 ${VERSION}..."
-          docker pull "${REPO}:${VERSION}" --quiet
-          echo "   拉取纯 latest 标签..."
+          echo "   拉取 latest 标签..."
           docker pull "${REPO}:latest" --quiet
+          echo "   拉取 ${VERSION} 标签..."
+          docker pull "${REPO}:${VERSION}" --quiet
           
           echo ""
-          echo "4. 检查latest标签的构建历史:"
-          docker history "${REPO}:latest" --format "table {{.CreatedBy}}\t{{.Size}}\t{{.CreatedAt}}" | head -20
-          
-          echo ""
-          echo "5. 架构支持:"
+          echo "4. 架构支持:"
           echo "   ✓ x86-64-v2 (amd64/v2) - 支持AVX指令集"
           echo "   ✓ x86-64-v3 (amd64/v3) - 支持AVX2指令集"  
           echo "   ✓ ARM64 - ARM64架构"
           
           echo ""
-          echo "6. 镜像总结:"
-          echo "   - 版本号镜像: ${REPO}:${VERSION}"
-          echo "   - 纯latest镜像: ${REPO}:latest"
-          
-          echo ""
-          echo "7. 使用示例:"
-          echo "   使用纯latest标签:"
+          echo "5. 使用示例:"
           echo "   docker run -d --name ss-go ${REPO}:latest -confPath /etc/ss-go/config.json"
-          echo ""
-          echo "   或指定版本:"
+          echo "  或指定版本:"
           echo "   docker run -d --name ss-go ${REPO}:${VERSION} -confPath /etc/ss-go/config.json"
-          
-          echo ""
-          echo "8. Docker Hub镜像验证:"
-          if [ -n "${{ env.DOCKERHUB_USERNAME }}" ]; then
-            DOCKERHUB_REPO="${{ env.DOCKERHUB_USERNAME }}/shadowsocks-go"
-            echo "   验证 ${DOCKERHUB_REPO}:latest:"
-            docker manifest inspect "${DOCKERHUB_REPO}:latest" 2>/dev/null && echo "   ✓ Docker Hub latest 标签存在" || echo "   ✗ Docker Hub latest 标签不存在"
-            
-            echo "   验证 ${DOCKERHUB_REPO}:${VERSION}:"
-            docker manifest inspect "${DOCKERHUB_REPO}:${VERSION}" 2>/dev/null && echo "   ✓ Docker Hub 版本号标签存在" || echo "   ✗ Docker Hub 版本号标签不存在"
-          else
-            echo "   未配置Docker Hub凭证，跳过Docker Hub验证"
-          fi
           EOF
